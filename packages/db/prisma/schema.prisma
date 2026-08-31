@@ -1,0 +1,117 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+enum GameMode {
+  cpu
+  private
+  casual
+  randomMatch
+}
+
+enum GameStatus {
+  waiting
+  in_progress
+  finished
+}
+
+enum GameResultStatus {
+  checkmate
+  resigned
+  draw
+  abandoned
+  foul_loss
+}
+
+model User {
+  id           String   @id @default(cuid())
+  name         String
+  email        String?  @unique
+  passwordHash String? // ゲスト/AIボットはnull(ログイン不可)
+  /// trueならサーバー内蔵AIのボットアカウント。人間とはレーティングプールを分けて扱う(集計・マッチング時にこのフラグでフィルタする)。
+  isAi         Boolean  @default(false)
+  rating       Int      @default(1500)
+  gamesPlayed  Int      @default(0)
+  createdAt    DateTime @default(now())
+
+  ruleSets     RuleSetPreset[]
+  gamesAsSente Game[]          @relation("SenteUser")
+  gamesAsGote  Game[]          @relation("GoteUser")
+
+  @@index([isAi])
+}
+
+/// ルールセットのプリセット(標準将棋・駒落ち・変則ルール等)を保存する
+model RuleSetPreset {
+  id        String   @id @default(cuid())
+  name      String
+  category  String // "standard" | "handicap" | "boardSize" | "special" など
+  config    Json // RuleSet型(packages/rule-engine)をそのままシリアライズして保存
+  isPublic  Boolean  @default(true)
+  createdBy String?
+  creator   User?    @relation(fields: [createdBy], references: [id])
+  createdAt DateTime @default(now())
+
+  games Game[]
+}
+
+model Game {
+  id       String   @id @default(cuid())
+  mode     GameMode
+
+  /// gameManager側で発行するゲームID。クライアントのURL(/game/[gameId])やsessionStorageのセッション情報はこちらを参照するため、
+  /// サーバー再起動後もこのIDでin-memoryの対局状態を復元できるよう永続化しておく。
+  engineGameId String  @unique
+  senteToken   String? // ゲスト対局用の再接続トークン(sente)
+  goteToken    String? // ゲスト対局用の再接続トークン(gote)
+
+  ruleSetPresetId String
+  ruleSetPreset   RuleSetPreset @relation(fields: [ruleSetPresetId], references: [id])
+
+  senteUserId String?
+  senteUser   User?   @relation("SenteUser", fields: [senteUserId], references: [id])
+  goteUserId  String?
+  goteUser    User?   @relation("GoteUser", fields: [goteUserId], references: [id])
+
+  isSenteCpu Boolean @default(false)
+  isGoteCpu  Boolean @default(false)
+  roomCode   String? @unique // プライベートマッチの部屋コード
+
+  status       GameStatus        @default(waiting)
+  resultStatus GameResultStatus?
+  winner       String? // "sente" | "gote" | null(引き分け)
+
+  startedAt DateTime?
+  endedAt   DateTime?
+  createdAt DateTime  @default(now())
+
+  moves GameMove[]
+
+  @@index([status])
+  @@index([roomCode])
+}
+
+model GameMove {
+  id            String   @id @default(cuid())
+  gameId        String
+  game          Game     @relation(fields: [gameId], references: [id])
+  moveNumber    Int
+  player        String // "sente" | "gote"
+  moveType      String // "move" | "drop"
+  fromRow       Int?
+  fromCol       Int?
+  toRow         Int
+  toCol         Int
+  piece         String
+  promote       Boolean  @default(false)
+  capturedPiece String?
+  createdAt     DateTime @default(now())
+
+  @@unique([gameId, moveNumber])
+  @@index([gameId])
+}

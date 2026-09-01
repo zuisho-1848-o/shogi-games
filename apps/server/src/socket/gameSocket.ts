@@ -101,70 +101,80 @@ export const registerGameSocket = (io: Server) => {
     socket.on(
       "move",
       async ({ gameId, playerToken, move }: { gameId: string; playerToken: string; move: Move }) => {
-        if (!checkSocketRateLimit(`${socket.id}:move`, MOVE_RATE_LIMIT, MOVE_RATE_WINDOW_MS)) {
-          socket.emit("error", { message: "rate_limited" });
-          return;
-        }
+        try {
+          if (!checkSocketRateLimit(`${socket.id}:move`, MOVE_RATE_LIMIT, MOVE_RATE_WINDOW_MS)) {
+            socket.emit("error", { message: "rate_limited" });
+            return;
+          }
 
-        const game = getGame(gameId);
-        if (!game) {
-          socket.emit("error", { message: "game_not_found" });
-          return;
-        }
+          const game = getGame(gameId);
+          if (!game) {
+            socket.emit("error", { message: "game_not_found" });
+            return;
+          }
 
-        const color = colorForToken(game, playerToken);
-        if (!color) {
-          socket.emit("error", { message: "invalid_token" });
-          return;
-        }
-        if (game.state.turn !== color) {
-          socket.emit("error", { message: "not_your_turn" });
-          return;
-        }
-        if (game.state.result.status !== "in_progress") {
-          socket.emit("error", { message: "game_finished" });
-          return;
-        }
+          const color = colorForToken(game, playerToken);
+          if (!color) {
+            socket.emit("error", { message: "invalid_token" });
+            return;
+          }
+          if (game.state.turn !== color) {
+            socket.emit("error", { message: "not_your_turn" });
+            return;
+          }
+          if (game.state.result.status !== "in_progress") {
+            socket.emit("error", { message: "game_finished" });
+            return;
+          }
 
-        if (await applyTimeoutIfExpired(io, game)) {
-          socket.emit("error", { message: "time_up" });
-          return;
-        }
+          if (await applyTimeoutIfExpired(io, game)) {
+            socket.emit("error", { message: "time_up" });
+            return;
+          }
 
-        const legal = game.state.legalMoves(color);
-        const matched = legal.find(
-          (m) =>
-            m.type === move.type &&
-            m.to.row === move.to.row &&
-            m.to.col === move.to.col &&
-            m.piece === move.piece &&
-            !!m.promote === !!move.promote &&
-            (m.type === "drop" || (m.from?.row === move.from?.row && m.from?.col === move.from?.col))
-        );
-        if (!matched) {
-          socket.emit("error", { message: "illegal_move" });
-          return;
-        }
+          const legal = game.state.legalMoves(color);
+          const matched = legal.find(
+            (m) =>
+              m.type === move.type &&
+              m.to.row === move.to.row &&
+              m.to.col === move.to.col &&
+              m.piece === move.piece &&
+              !!m.promote === !!move.promote &&
+              (m.type === "drop" || (m.from?.row === move.from?.row && m.from?.col === move.from?.col))
+          );
+          if (!matched) {
+            socket.emit("error", { message: "illegal_move" });
+            return;
+          }
 
-        const capturedKind = game.state.board.get(matched.to)?.kind;
-        game.state.applyMove(matched);
-        await persistMove(game, color, matched, capturedKind);
-        await persistResultIfFinished(game);
-        broadcastState(io, game);
-        maybeTriggerCpuMove(io, game);
-        maybeScheduleTimeout(io, game);
+          const capturedKind = game.state.board.get(matched.to)?.kind;
+          game.state.applyMove(matched);
+          await persistMove(game, color, matched, capturedKind);
+          await persistResultIfFinished(game);
+          broadcastState(io, game);
+          maybeTriggerCpuMove(io, game);
+          maybeScheduleTimeout(io, game);
+        } catch (e) {
+          // DB不整合等、想定外のエラーでプロセス全体が落ちないようにする(他の対局を巻き添えにしないため)。
+          console.error(`[gameSocket move] failed for game ${gameId}:`, e);
+          socket.emit("error", { message: "internal_error" });
+        }
       }
     );
 
     socket.on("resign", async ({ gameId, playerToken }: { gameId: string; playerToken: string }) => {
-      const game = getGame(gameId);
-      if (!game) return;
-      const color = colorForToken(game, playerToken);
-      if (!color || game.state.result.status !== "in_progress") return;
+      try {
+        const game = getGame(gameId);
+        if (!game) return;
+        const color = colorForToken(game, playerToken);
+        if (!color || game.state.result.status !== "in_progress") return;
 
-      game.state.resign(color);
-      await persistResultIfFinished(game);
-      broadcastState(io, game);
+        game.state.resign(color);
+        await persistResultIfFinished(game);
+        broadcastState(io, game);
+      } catch (e) {
+        console.error(`[gameSocket resign] failed for game ${gameId}:`, e);
+      }
     });
 
     socket.on("disconnect", () => {

@@ -9,6 +9,7 @@ import {
   saveSession,
 } from "../../lib/api";
 import { pieceLabel } from "../../lib/pieceLabels";
+import { PieceGlyph } from "../../components/PieceGlyph";
 
 const BOARD_WIDTH = 9;
 const BOARD_HEIGHT = 9;
@@ -223,11 +224,7 @@ export default function SetupPage() {
                   owner ? "hover:bg-amber-200" : "bg-neutral-200",
                 ].join(" ")}
               >
-                {piece && (
-                  <span className={["font-bold", piece.owner === "gote" ? "rotate-180" : "", "text-blue-700"].join(" ")}>
-                    {pieceLabel(piece.kind)}
-                  </span>
-                )}
+                {piece && <PieceGlyph kind={piece.kind} promoted={false} flipped={piece.owner === "gote"} />}
               </button>
             );
           })

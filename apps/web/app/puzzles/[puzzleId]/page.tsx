@@ -4,8 +4,8 @@ import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { Move, Player, Square } from "@shogi-games/rule-engine";
 import { attemptPuzzleMove, fetchPuzzle, PuzzleDetail, PuzzleSnapshot } from "../../../lib/api";
-import { pieceLabel } from "../../../lib/pieceLabels";
 import { HandPanel } from "../../../components/Board";
+import { PieceGlyph } from "../../../components/PieceGlyph";
 
 type Cell = { kind: string; owner: Player; promoted: boolean } | null;
 
@@ -63,6 +63,10 @@ export default function PuzzleSolvePage() {
 
   const attacker = snapshot.attacker;
   const grid = cellsToGrid(snapshot, puzzle.boardWidth, puzzle.boardHeight);
+  // 攻め方が常に画面下側に来るように、後手が攻め方の場合は盤面を180度回転させて表示する。
+  const flip = attacker === "gote";
+  const rowOrder = Array.from({ length: puzzle.boardHeight }, (_, i) => (flip ? puzzle.boardHeight - 1 - i : i));
+  const colOrder = Array.from({ length: puzzle.boardWidth }, (_, i) => (flip ? i : puzzle.boardWidth - 1 - i));
 
   const clearSelection = () => {
     setSelectedFrom(null);
@@ -151,9 +155,8 @@ export default function PuzzleSolvePage() {
         className="inline-grid border-2 border-neutral-800 bg-amber-100"
         style={{ gridTemplateColumns: `repeat(${puzzle.boardWidth}, 44px)` }}
       >
-        {Array.from({ length: puzzle.boardHeight }, (_, r) => r).map((r) =>
-          // 内部座標はcol0=1筋(右端)・col(width-1)=9筋(左端)なので、盤面図の慣習に合わせて列を反転して描画する。
-          Array.from({ length: puzzle.boardWidth }, (_, i) => puzzle.boardWidth - 1 - i).map((c) => {
+        {rowOrder.map((r) =>
+          colOrder.map((c) => {
             const cell = grid[r][c];
             const isSelected = selectedFrom && selectedFrom.row === r && selectedFrom.col === c;
             return (
@@ -166,15 +169,7 @@ export default function PuzzleSolvePage() {
                   !solved && turn === attacker ? "hover:bg-amber-200" : "",
                 ].join(" ")}
               >
-                {cell && (
-                  <span
-                    className={["font-bold", cell.owner === "gote" ? "rotate-180" : "", cell.promoted ? "text-red-600" : "text-black"].join(
-                      " "
-                    )}
-                  >
-                    {pieceLabel(cell.kind)}
-                  </span>
-                )}
+                {cell && <PieceGlyph kind={cell.kind} promoted={cell.promoted} flipped={cell.owner !== attacker} />}
               </button>
             );
           })

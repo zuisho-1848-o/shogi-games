@@ -2,7 +2,7 @@
 
 import { Move, Player, Square } from "@shogi-games/rule-engine";
 import { ClientGameState } from "../lib/useGameSocket";
-import { pieceLabel } from "../lib/pieceLabels";
+import { PieceGlyph } from "./PieceGlyph";
 
 interface BoardProps {
   state: ClientGameState;
@@ -68,15 +68,7 @@ export const Board = ({ state, selectedFrom, selectedHandPiece, onSquareClick }:
               ].join(" ")}
             >
               {cell && (
-                <span
-                  className={[
-                    "font-bold",
-                    cell.owner !== (state.yourColor ?? "sente") ? "rotate-180" : "",
-                    cell.promoted ? "text-red-600" : "text-black",
-                  ].join(" ")}
-                >
-                  {pieceLabel(cell.kind)}
-                </span>
+                <PieceGlyph kind={cell.kind} promoted={cell.promoted} flipped={cell.owner !== (state.yourColor ?? "sente")} />
               )}
             </button>
           );
@@ -85,6 +77,9 @@ export const Board = ({ state, selectedFrom, selectedHandPiece, onSquareClick }:
     </div>
   );
 };
+
+// 持ち駒の並び順(将棋の一般的な並びに合わせる)。この一覧にない駒種(バリアントルール用等)は末尾に回す。
+const HAND_KIND_ORDER = ["rook", "bishop", "gold", "silver", "knight", "lance", "pawn"];
 
 export const HandPanel = ({
   owner,
@@ -99,7 +94,13 @@ export const HandPanel = ({
   selectedHandPiece: string | null;
   onSelect: (kind: string) => void;
 }) => {
-  const entries = Object.entries(hand).filter(([, count]) => count > 0);
+  const entries = Object.entries(hand)
+    .filter(([, count]) => count > 0)
+    .sort(([a], [b]) => {
+      const ia = HAND_KIND_ORDER.indexOf(a);
+      const ib = HAND_KIND_ORDER.indexOf(b);
+      return (ia === -1 ? HAND_KIND_ORDER.length : ia) - (ib === -1 ? HAND_KIND_ORDER.length : ib);
+    });
   return (
     <div className="flex gap-2 items-center min-h-8">
       <span className="text-xs text-neutral-500">{owner === "sente" ? "先手 持ち駒" : "後手 持ち駒"}</span>
@@ -110,12 +111,13 @@ export const HandPanel = ({
           disabled={!selectable}
           onClick={() => onSelect(kind)}
           className={[
-            "px-2 py-1 border rounded text-sm",
+            "px-1.5 py-1 border rounded flex items-center gap-1",
             selectedHandPiece === kind ? "bg-amber-300 border-amber-600" : "bg-white border-neutral-300",
             !selectable ? "opacity-50 cursor-default" : "hover:bg-amber-100",
           ].join(" ")}
         >
-          {pieceLabel(kind)} x{count}
+          <PieceGlyph kind={kind} promoted={false} flipped={false} size={26} />
+          <span className="text-sm">x{count}</span>
         </button>
       ))}
     </div>

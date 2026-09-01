@@ -201,3 +201,11 @@ export const getPieceDefinition = (
   if (!def) throw new Error(`Unknown piece kind: ${kind}`);
   return def;
 };
+
+/** 成り駒のkind(例: "tokin")から、成る前のkind(例: "pawn")を逆引きする。
+ * 成り駒でなければそのまま返す。手駒に戻す時(持ち駒は常に不成の種類で数える)やUSI/SFEN変換等、
+ * 「成っていても元の駒種を知りたい」場面で使う。 */
+export const baseKindOf = (pieceSet: PieceDefinition[], kind: string): string => {
+  const promotedFrom = pieceSet.find((p) => p.promotesTo === kind);
+  return promotedFrom ? promotedFrom.kind : kind;
+};

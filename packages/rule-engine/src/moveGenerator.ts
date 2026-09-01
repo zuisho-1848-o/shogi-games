@@ -142,7 +142,12 @@ const hasUnpromotedPawnInFile = (board: Board, owner: Player, col: number): bool
   return false;
 };
 
-const applyMoveToBoard = (board: Board, owner: Player, move: Move): { board: Board; captured: Piece | null } => {
+const applyMoveToBoard = (
+  board: Board,
+  owner: Player,
+  move: Move,
+  ruleSet: RuleSet
+): { board: Board; captured: Piece | null } => {
   const next = board.clone();
   let captured: Piece | null = null;
 
@@ -151,7 +156,15 @@ const applyMoveToBoard = (board: Board, owner: Player, move: Move): { board: Boa
     if (!piece) throw new Error("no piece at from square");
     captured = next.get(move.to);
     next.set(move.from, null);
-    next.set(move.to, { ...piece, promoted: piece.promoted || !!move.promote });
+    if (move.promote && !piece.promoted) {
+      // 成った駒はkind自体を成り後の駒種(例: pawn→tokin)に切り替える。promotedフラグだけを立てて
+      // kindを元のままにすると、以降の移動先生成が成る前の駒の動き方(歩なら1マス前のみ等)のままに
+      // なってしまう(実際にこのバグがあった: 成駒が成駒の動きをできない)。
+      const def = getPieceDefinition(ruleSet.pieceSet, piece.kind);
+      next.set(move.to, { kind: def.promotesTo ?? piece.kind, owner: piece.owner, promoted: true });
+    } else {
+      next.set(move.to, { ...piece });
+    }
   } else {
     next.set(move.to, { kind: move.piece, owner, promoted: false });
   }
@@ -184,7 +197,7 @@ const isUchifuzume = (
 ): boolean => {
   if (move.type !== "drop" || move.piece !== "pawn") return false;
 
-  const { board: nextBoard } = applyMoveToBoard(board, dropOwner, move);
+  const { board: nextBoard } = applyMoveToBoard(board, dropOwner, move, ruleSet);
   const opponent = opponentOf(dropOwner);
   if (!isInCheck(nextBoard, opponent, ruleSet)) return false;
 
@@ -209,7 +222,7 @@ export const generateLegalMoves = (
 
   const legal = pseudo
     .filter((move) => {
-      const { board: next } = applyMoveToBoard(board, owner, move);
+      const { board: next } = applyMoveToBoard(board, owner, move, ruleSet);
       return !isInCheck(next, owner, ruleSet);
     })
     .filter((move) => !isUchifuzume(board, move, owner, ruleSet, opponentHand));

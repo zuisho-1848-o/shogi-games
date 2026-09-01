@@ -1,4 +1,4 @@
-import { Board, Move, Player, Square } from "@shogi-games/rule-engine";
+import { Board, Move, Player, STANDARD_PIECE_SET, Square, baseKindOf } from "@shogi-games/rule-engine";
 
 /**
  * SFEN(Shogi Forsyth-Edwards Notation)変換。標準ルール(9x9・標準駒)専用。
@@ -50,7 +50,8 @@ export const boardToSfen = (
         rank += empty;
         empty = 0;
       }
-      const letter = USI_LETTER[piece.kind];
+      // 成り駒はkind自体が変わる(例: "tokin")ので、USI表記の元になる駒種(例: "pawn")に戻してから引く。
+      const letter = USI_LETTER[baseKindOf(STANDARD_PIECE_SET, piece.kind)];
       if (!letter) throw new Error(`sfen: unsupported piece kind "${piece.kind}"`);
       const promoted = piece.promoted ? "+" : "";
       rank += promoted + (piece.owner === "sente" ? letter : letter.toLowerCase());

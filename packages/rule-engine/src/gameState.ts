@@ -6,6 +6,7 @@ import {
   isInPromotionZone,
   royalKindsOf,
 } from "./moveGenerator";
+import { baseKindOf } from "./pieceDefinitions";
 import { Move, Player, RuleSet, opponentOf } from "./types";
 
 export type GameResult =
@@ -91,7 +92,7 @@ export class GameState {
     if (this.result.status !== "in_progress") throw new Error("game already finished");
 
     const owner = this.turn;
-    const { board: nextBoard, captured } = applyMoveToBoard(this.board, owner, move);
+    const { board: nextBoard, captured } = applyMoveToBoard(this.board, owner, move, this.ruleSet);
     this.board = nextBoard;
 
     if (move.type === "drop") {
@@ -99,7 +100,7 @@ export class GameState {
     }
 
     if (captured) {
-      const handKind = baseKindOf(this.ruleSet, captured.kind);
+      const handKind = baseKindOf(this.ruleSet.pieceSet, captured.kind);
       this.hands[owner][handKind] = (this.hands[owner][handKind] ?? 0) + 1;
     }
 
@@ -211,9 +212,3 @@ export class GameState {
     this.result = { status: "timeout", winner: opponentOf(player) };
   }
 }
-
-const baseKindOf = (ruleSet: RuleSet, kind: string): string => {
-  // 成り駒を取った場合、持ち駒は元の駒(不成)に戻るのが将棋のルール。
-  const promotedFrom = ruleSet.pieceSet.find((p) => p.promotesTo === kind);
-  return promotedFrom ? promotedFrom.kind : kind;
-};

@@ -5,6 +5,7 @@ import {
   RuleSet,
   Square,
   applyMoveToBoard,
+  baseKindOf,
   generateLegalMoves,
   generatePieceMoves,
   isInCheck,
@@ -98,11 +99,10 @@ export interface SearchNode {
 }
 
 export const applyMovePure = (node: SearchNode, move: Move, ruleSet: RuleSet): SearchNode => {
-  const { board: nextBoard, captured } = applyMoveToBoard(node.board, node.turn, move);
+  const { board: nextBoard, captured } = applyMoveToBoard(node.board, node.turn, move, ruleSet);
   const nextHands = cloneHands(node.hands);
   if (captured) {
-    const promotedFrom = ruleSet.pieceSet.find((p) => p.promotesTo === captured.kind);
-    const baseKind = promotedFrom ? promotedFrom.kind : captured.kind;
+    const baseKind = baseKindOf(ruleSet.pieceSet, captured.kind);
     nextHands[node.turn][baseKind] = (nextHands[node.turn][baseKind] ?? 0) + 1;
   }
   return { board: nextBoard, hands: nextHands, turn: opponentOf(node.turn) };

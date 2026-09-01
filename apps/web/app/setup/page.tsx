@@ -203,7 +203,8 @@ export default function SetupPage() {
         style={{ gridTemplateColumns: `repeat(${BOARD_WIDTH}, 44px)` }}
       >
         {Array.from({ length: BOARD_HEIGHT }, (_, row) =>
-          Array.from({ length: BOARD_WIDTH }, (_, col) => {
+          // 内部座標はcol0=1筋(右端)・col(width-1)=9筋(左端)なので、盤面図の慣習に合わせて列を反転して描画する。
+          Array.from({ length: BOARD_WIDTH }, (_, i) => BOARD_WIDTH - 1 - i).map((col) => {
             const owner: Player | null = SENTE_EDITABLE_ROWS.includes(row)
               ? "sente"
               : GOTE_EDITABLE_ROWS.includes(row)

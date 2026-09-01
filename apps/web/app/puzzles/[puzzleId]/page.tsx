@@ -152,7 +152,8 @@ export default function PuzzleSolvePage() {
         style={{ gridTemplateColumns: `repeat(${puzzle.boardWidth}, 44px)` }}
       >
         {Array.from({ length: puzzle.boardHeight }, (_, r) => r).map((r) =>
-          Array.from({ length: puzzle.boardWidth }, (_, c) => c).map((c) => {
+          // 内部座標はcol0=1筋(右端)・col(width-1)=9筋(左端)なので、盤面図の慣習に合わせて列を反転して描画する。
+          Array.from({ length: puzzle.boardWidth }, (_, i) => puzzle.boardWidth - 1 - i).map((c) => {
             const cell = grid[r][c];
             const isSelected = selectedFrom && selectedFrom.row === r && selectedFrom.col === c;
             return (

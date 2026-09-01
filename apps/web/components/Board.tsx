@@ -38,7 +38,9 @@ export const Board = ({ state, selectedFrom, selectedHandPiece, onSquareClick }:
   // 後手視点では盤を180度回転させ、自陣が手前(下側)に来るようにする。観戦者は先手視点のまま。
   const flip = state.yourColor === "gote";
   const rowOrder = Array.from({ length: state.boardHeight }, (_, i) => (flip ? state.boardHeight - 1 - i : i));
-  const colOrder = Array.from({ length: state.boardWidth }, (_, i) => (flip ? state.boardWidth - 1 - i : i));
+  // 内部座標はcol0=1筋(右端)・col(width-1)=9筋(左端)。将棋の盤面図の慣習(先手視点で9筋が画面左)に合わせるため、
+  // colOrderはrowOrderと逆向きにする(先手視点=flip:falseで列を右詰めに反転して描画する)。
+  const colOrder = Array.from({ length: state.boardWidth }, (_, i) => (flip ? i : state.boardWidth - 1 - i));
 
   return (
     <div

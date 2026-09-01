@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { Square } from "@shogi-games/rule-engine";
+import { Player, Square } from "@shogi-games/rule-engine";
 import { useGameSocket } from "../../../lib/useGameSocket";
 import { loadSession, SERVER_URL, StoredSession } from "../../../lib/api";
 import { Board, HandPanel } from "../../../components/Board";
@@ -14,7 +14,52 @@ const resultLabel = (result: ReturnType<typeof useGameSocket>["state"]): string 
   if (result.result.status === "resigned") return `投了。${result.result.winner === "sente" ? "先手" : "後手"}の勝ち`;
   if (result.result.status === "foul_loss")
     return `反則負け(連続王手の千日手)。${result.result.winner === "sente" ? "先手" : "後手"}の勝ち`;
+  if (result.result.status === "jishogi_win")
+    return `持将棋(入玉勝ち)。${result.result.winner === "sente" ? "先手" : "後手"}の勝ち`;
+  if (result.result.status === "timeout")
+    return `時間切れ。${result.result.winner === "sente" ? "先手" : "後手"}の勝ち`;
   return "引き分け";
+};
+
+const formatClock = (ms: number): string => {
+  const clamped = Math.max(0, ms);
+  const totalSeconds = Math.floor(clamped / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${String(seconds).padStart(2, "0")}`;
+};
+
+const ClockPanel = ({
+  color,
+  totalMs,
+  remainingMs,
+  isActive,
+  receivedAt,
+  tick,
+}: {
+  color: Player;
+  totalMs: number;
+  remainingMs: number;
+  isActive: boolean;
+  receivedAt: number;
+  tick: number;
+}) => {
+  // サーバーからのスナップショット(remainingMs, receivedAt時点)を、手番側のみクライアント側で1秒ごとに減算して表示する。
+  const displayed = isActive ? remainingMs - (Date.now() - receivedAt) : remainingMs;
+  const isLow = displayed < 30_000;
+  void tick; // 再レンダリングのトリガーとしてのみ使う
+
+  return (
+    <div
+      className={[
+        "px-3 py-1 rounded font-mono text-sm",
+        isActive ? "bg-neutral-900 text-white" : "bg-neutral-100 text-neutral-500",
+        isLow && isActive ? "bg-red-700" : "",
+      ].join(" ")}
+    >
+      {color === "sente" ? "先手" : "後手"} {formatClock(displayed)} / {formatClock(totalMs)}
+    </div>
+  );
 };
 
 export default function GamePage() {
@@ -31,6 +76,18 @@ export default function GamePage() {
 
   const [selectedFrom, setSelectedFrom] = useState<Square | null>(null);
   const [selectedHandPiece, setSelectedHandPiece] = useState<string | null>(null);
+  const [receivedAt, setReceivedAt] = useState(Date.now());
+  const [tick, setTick] = useState(0);
+
+  useEffect(() => {
+    setReceivedAt(Date.now());
+  }, [state?.timeControl?.remainingMs.sente, state?.timeControl?.remainingMs.gote]);
+
+  useEffect(() => {
+    if (!state?.timeControl || state.result.status !== "in_progress") return;
+    const interval = setInterval(() => setTick((t) => t + 1), 1000);
+    return () => clearInterval(interval);
+  }, [state?.timeControl, state?.result.status]);
 
   const isMyTurn = !!state && state.yourColor === state.turn && state.result.status === "in_progress";
 
@@ -103,17 +160,6 @@ export default function GamePage() {
     setSelectedHandPiece((prev) => (prev === kind ? null : kind));
   };
 
-  if (!session) {
-    return (
-      <main className="p-8">
-        <p>この対局のセッション情報が見つかりません。ロビーからやり直してください。</p>
-        <button className="underline mt-2" onClick={() => router.push("/")}>
-          ロビーへ戻る
-        </button>
-      </main>
-    );
-  }
-
   if (!state) {
     return (
       <main className="p-8">
@@ -139,6 +185,27 @@ export default function GamePage() {
 
       {state.yourColor && state.opponentIsCpuOrBot[state.yourColor === "sente" ? "gote" : "sente"] && (
         <span className="text-xs bg-neutral-800 text-white px-2 py-1 rounded-full">🤖 対戦相手はCPU/ボットです</span>
+      )}
+
+      {state.timeControl && (
+        <div className="flex gap-3">
+          <ClockPanel
+            color="gote"
+            totalMs={state.timeControl.totalMs}
+            remainingMs={state.timeControl.remainingMs.gote}
+            isActive={state.turn === "gote" && state.result.status === "in_progress"}
+            receivedAt={receivedAt}
+            tick={tick}
+          />
+          <ClockPanel
+            color="sente"
+            totalMs={state.timeControl.totalMs}
+            remainingMs={state.timeControl.remainingMs.sente}
+            isActive={state.turn === "sente" && state.result.status === "in_progress"}
+            receivedAt={receivedAt}
+            tick={tick}
+          />
+        </div>
       )}
 
       <p className="font-medium">{resultLabel(state)}</p>

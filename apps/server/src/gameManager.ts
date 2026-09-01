@@ -21,6 +21,15 @@ export interface ServerGame {
   roomCode?: string;
   dbGameId?: string;
   createdAt: number;
+  /** 設定されていれば持ち時間制。片側あたりtotalMsミリ秒、消費すると時間切れ負け。 */
+  timeControl?: TimeControlState;
+}
+
+export interface TimeControlState {
+  totalMs: number;
+  remainingMs: Record<Player, number>;
+  /** 現在の手番がスタートした時刻(この時刻からの経過分がremainingMsから差し引かれる)。 */
+  turnStartedAt: number;
 }
 
 const games = new Map<string, ServerGame>();
@@ -40,6 +49,8 @@ export const createGame = (params: {
   humanUserId?: string;
   opponentAiProfile?: AiProfile;
   opponentAiUserId?: string;
+  /** 指定すれば持ち時間制(片側あたりミリ秒)で対局を作成する。省略時は時間無制限。 */
+  timeControlMs?: number;
 }): { game: ServerGame; playerToken: string } => {
   const ruleSet = params.ruleSet;
   const id = genId();
@@ -59,6 +70,13 @@ export const createGame = (params: {
       ...(params.isOpponentCpu && params.opponentAiUserId ? { [opponentColor]: params.opponentAiUserId } : {}),
     },
     createdAt: Date.now(),
+    timeControl: params.timeControlMs
+      ? {
+          totalMs: params.timeControlMs,
+          remainingMs: { sente: params.timeControlMs, gote: params.timeControlMs },
+          turnStartedAt: Date.now(),
+        }
+      : undefined,
   };
 
   if (params.mode === "private") {
@@ -117,6 +135,26 @@ export const joinPrivateGame = (
 };
 
 export const getGame = (id: string): ServerGame | undefined => games.get(id);
+
+/** 持ち時間制が有効な対局で、現在の手番側の消費時間を反映する。手番が変わるたびに(着手時・時間切れチェック時に)呼ぶ。
+ * 消費の結果、残り時間が尽きていればそのプレイヤーの色を返す(呼び出し側で timeout() を呼んで決着させる)。
+ * 時間切れでなければ、経過分を差し引いてturnStartedAtをリセットするだけでnullを返す。 */
+export const consumeTurnTimeAndCheckTimeout = (game: ServerGame): Player | null => {
+  const tc = game.timeControl;
+  if (!tc || game.state.result.status !== "in_progress") return null;
+
+  const turn = game.state.turn;
+  const now = Date.now();
+  const elapsed = now - tc.turnStartedAt;
+  tc.remainingMs[turn] -= elapsed;
+  tc.turnStartedAt = now;
+
+  if (tc.remainingMs[turn] <= 0) {
+    tc.remainingMs[turn] = 0;
+    return turn;
+  }
+  return null;
+};
 
 /** サーバー再起動時、DBから復元したServerGameをin-memoryストアに登録する(restore.tsから呼ばれる)。 */
 export const registerRestoredGame = (game: ServerGame): void => {

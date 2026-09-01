@@ -23,13 +23,16 @@ export interface ClientGameState {
     | { status: "checkmate"; winner: Player }
     | { status: "resigned"; winner: Player }
     | { status: "draw"; reason: string }
-    | { status: "foul_loss"; winner: Player; reason: string };
+    | { status: "foul_loss"; winner: Player; reason: string }
+    | { status: "jishogi_win"; winner: Player }
+    | { status: "timeout"; winner: Player };
   legalMovesForYou: Move[];
   yourColor: Player | null;
   isInCheck: Record<Player, boolean>;
   roomCode?: string;
   bothPlayersConnected: boolean;
   opponentIsCpuOrBot: Partial<Record<Player, boolean>>;
+  timeControl?: { totalMs: number; remainingMs: Record<Player, number> };
 }
 
 export const useGameSocket = (gameId: string, playerToken: string | undefined) => {

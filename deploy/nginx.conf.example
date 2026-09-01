@@ -1,0 +1,48 @@
+# Nginx設定サンプル。Highstoの他サービス(rule.highsto.net等)と同じパターンに合わせている。
+# 実際の設置場所: /etc/nginx/sites-available/<domain>
+#
+# このプロジェクトはフロント(Next.js, 3100番)とAPI/socket.io(Express+Socket.io, 4000番)の
+# 2プロセス構成なので、パスで振り分ける。socket.ioのWebSocketアップグレード(Upgrade/Connectionヘッダ)を
+# 通すのを忘れないこと(将棋の対局はリアルタイム通信が必須のため、ここが欠けると対局が一切進まなくなる)。
+
+# --- フロント(Next.js) ---
+server {
+    listen 80;
+    server_name shogi.highsto.net; # 実際のドメインに置き換える
+
+    location / {
+        proxy_pass http://localhost:3100;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_cache_bypass $http_upgrade;
+    }
+}
+
+# --- API + Socket.io(Express) ---
+server {
+    listen 80;
+    server_name shogi-api.highsto.net; # 実際のドメインに置き換える
+
+    location / {
+        proxy_pass http://localhost:4000;
+        proxy_http_version 1.1;
+        # socket.ioのWebSocket接続に必須
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_cache_bypass $http_upgrade;
+        # socket.ioの長時間接続がタイムアウトで切れないように延長
+        proxy_read_timeout 3600s;
+    }
+}
+
+# SSL取得:
+#   sudo certbot --nginx -d shogi.highsto.net -d shogi-api.highsto.net
+# Nginx再起動:
+#   sudo systemctl restart nginx

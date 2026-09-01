@@ -1,59 +1,15 @@
 import { Server, Socket } from "socket.io";
 import { Move, Player } from "@shogi-games/rule-engine";
-import { colorForToken, getGame, ServerGame } from "../gameManager";
+import { colorForToken, consumeTurnTimeAndCheckTimeout, getGame, ServerGame } from "../gameManager";
 import { serializeGame } from "../serialize";
-import { chooseMove } from "../ai/simpleAi";
-import { prisma } from "../db";
-import { applyRatingUpdate } from "../rating";
+import { chooseMoveForProfile } from "../ai/chooseMoveForProfile";
+import { getAiProfileBySlug } from "../aiProfiles";
+import { persistMove, persistResultIfFinished } from "../gamePersistence";
+import { checkSocketRateLimit, clearSocketRateLimit } from "../rateLimit";
 
 const roomName = (gameId: string) => `game:${gameId}`;
-
-const persistMove = async (game: ServerGame, player: Player, move: Move, capturedKind?: string) => {
-  if (!game.dbGameId) return;
-  const moveNumber = game.state.history.length;
-  await prisma.gameMove.create({
-    data: {
-      gameId: game.dbGameId,
-      moveNumber,
-      player,
-      moveType: move.type,
-      fromRow: move.from?.row ?? null,
-      fromCol: move.from?.col ?? null,
-      toRow: move.to.row,
-      toCol: move.to.col,
-      piece: move.piece,
-      promote: !!move.promote,
-      capturedPiece: capturedKind ?? null,
-    },
-  });
-};
-
-const persistResultIfFinished = async (game: ServerGame) => {
-  if (!game.dbGameId) return;
-  const { result } = game.state;
-  if (result.status === "in_progress") return;
-
-  await prisma.game.update({
-    where: { id: game.dbGameId },
-    data: {
-      status: "finished",
-      resultStatus:
-        result.status === "checkmate" || result.status === "resigned" || result.status === "foul_loss"
-          ? result.status
-          : "draw",
-      winner: "winner" in result ? result.winner : null,
-      endedAt: new Date(),
-    },
-  });
-
-  const { sente: senteUserId, gote: goteUserId } = game.userIds;
-  if (senteUserId && goteUserId) {
-    const senteScore = !("winner" in result) ? 0.5 : result.winner === "sente" ? 1 : 0;
-    await applyRatingUpdate({ senteUserId, goteUserId, senteScore }).catch((e) =>
-      console.error("rating update failed", e)
-    );
-  }
-};
+const MOVE_RATE_LIMIT = 120; // 1分あたりの最大着手回数(人間には十分すぎる余裕、暴走ボット対策)
+const MOVE_RATE_WINDOW_MS = 60 * 1000;
 
 const broadcastState = (io: Server, game: ServerGame) => {
   for (const color of ["sente", "gote"] as Player[]) {
@@ -62,28 +18,68 @@ const broadcastState = (io: Server, game: ServerGame) => {
   io.to(`${roomName(game.id)}:spectator`).emit("state", serializeGame(game, null));
 };
 
+/** 持ち時間切れを検出したら決着させ、DBに反映してブロードキャストする。時間切れならtrueを返す。 */
+const applyTimeoutIfExpired = async (io: Server, game: ServerGame): Promise<boolean> => {
+  const timedOutPlayer = consumeTurnTimeAndCheckTimeout(game);
+  if (!timedOutPlayer) return false;
+
+  game.state.timeout(timedOutPlayer);
+  await persistResultIfFinished(game);
+  broadcastState(io, game);
+  return true;
+};
+
 const maybeTriggerCpuMove = (io: Server, game: ServerGame) => {
   if (game.state.result.status !== "in_progress") return;
   const turn = game.state.turn;
   if (!game.cpuColors[turn]) return;
 
   setTimeout(async () => {
+    try {
+      const current = getGame(game.id);
+      if (!current || current.state.result.status !== "in_progress") return;
+      if (current.state.turn !== turn) return; // 二重発火防止(joinの再送信等で複数回スケジュールされた場合)
+      // aiConfigに明示指定がなければ既定強さ(ai_medium相当)にフォールバックする。
+      const profile = current.aiConfig?.[turn] ?? getAiProfileBySlug("ai_medium") ?? {
+        slug: "ai_medium",
+        name: "AI中級",
+        maxDepth: 4,
+        timeBudgetMs: 1200,
+      };
+      const move = await chooseMoveForProfile(current.state.board, current.state.hands, turn, current.ruleSet, profile, {
+        moveCountSoFar: current.state.history.length,
+      });
+      if (!move) return;
+      const capturedKind = current.state.board.get(move.to)?.kind;
+      current.state.applyMove(move);
+      await persistMove(current, turn, move, capturedKind);
+      await persistResultIfFinished(current);
+      broadcastState(io, current);
+      maybeTriggerCpuMove(io, current);
+      maybeScheduleTimeout(io, current);
+    } catch (e) {
+      // 外部USIエンジンのクラッシュ/タイムアウト等でCPU側が手を指せなくても、プロセス全体を落とさない。
+      // (以前は例外がここで無視されずsetTimeoutコールバック内でunhandled rejectionになり、サーバー全体がクラッシュしていた)
+      console.error(`[maybeTriggerCpuMove] failed to produce a CPU move for game ${game.id}:`, e);
+    }
+  }, 400);
+};
+
+/** 持ち時間制の対局で、現在の手番側の残り時間がちょうど尽きるタイミングにタイマーを仕込んでおく。
+ * 誰も着手しないまま持ち時間が切れた場合でも、このタイマーが自発的に時間切れを成立させる。
+ * (人間側の着手時にもconsumeTurnTimeAndCheckTimeoutで同様のチェックをしているので、二重に処理されても
+ * 2回目はgame.state.result.statusが既にin_progressでなくなっているため無害。) */
+const maybeScheduleTimeout = (io: Server, game: ServerGame) => {
+  if (game.state.result.status !== "in_progress" || !game.timeControl) return;
+  const turn = game.state.turn;
+  const remaining = game.timeControl.remainingMs[turn];
+
+  setTimeout(async () => {
     const current = getGame(game.id);
     if (!current || current.state.result.status !== "in_progress") return;
-    if (current.state.turn !== turn) return; // 二重発火防止(joinの再送信等で複数回スケジュールされた場合)
-    const profile = current.aiConfig?.[turn];
-    const move = chooseMove(current.state.board, current.state.hands, turn, current.ruleSet, {
-      maxDepth: profile?.maxDepth,
-      timeBudgetMs: profile?.timeBudgetMs,
-    });
-    if (!move) return;
-    const capturedKind = current.state.board.get(move.to)?.kind;
-    current.state.applyMove(move);
-    await persistMove(current, turn, move, capturedKind);
-    await persistResultIfFinished(current);
-    broadcastState(io, current);
-    maybeTriggerCpuMove(io, current);
-  }, 400);
+    if (current.state.turn !== turn) return; // その間に着手されていれば何もしない
+    await applyTimeoutIfExpired(io, current);
+  }, Math.max(0, remaining) + 50); // 少し余裕を持たせる
 };
 
 export const registerGameSocket = (io: Server) => {
@@ -99,11 +95,17 @@ export const registerGameSocket = (io: Server) => {
       socket.join(color ? `${roomName(gameId)}:${color}` : `${roomName(gameId)}:spectator`);
       socket.emit("state", serializeGame(game, color));
       maybeTriggerCpuMove(io, game);
+      maybeScheduleTimeout(io, game);
     });
 
     socket.on(
       "move",
       async ({ gameId, playerToken, move }: { gameId: string; playerToken: string; move: Move }) => {
+        if (!checkSocketRateLimit(`${socket.id}:move`, MOVE_RATE_LIMIT, MOVE_RATE_WINDOW_MS)) {
+          socket.emit("error", { message: "rate_limited" });
+          return;
+        }
+
         const game = getGame(gameId);
         if (!game) {
           socket.emit("error", { message: "game_not_found" });
@@ -121,6 +123,11 @@ export const registerGameSocket = (io: Server) => {
         }
         if (game.state.result.status !== "in_progress") {
           socket.emit("error", { message: "game_finished" });
+          return;
+        }
+
+        if (await applyTimeoutIfExpired(io, game)) {
+          socket.emit("error", { message: "time_up" });
           return;
         }
 
@@ -145,6 +152,7 @@ export const registerGameSocket = (io: Server) => {
         await persistResultIfFinished(game);
         broadcastState(io, game);
         maybeTriggerCpuMove(io, game);
+        maybeScheduleTimeout(io, game);
       }
     );
 
@@ -157,6 +165,10 @@ export const registerGameSocket = (io: Server) => {
       game.state.resign(color);
       await persistResultIfFinished(game);
       broadcastState(io, game);
+    });
+
+    socket.on("disconnect", () => {
+      clearSocketRateLimit(socket.id);
     });
   });
 };

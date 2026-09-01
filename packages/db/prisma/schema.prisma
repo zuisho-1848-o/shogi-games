@@ -26,6 +26,7 @@ enum GameResultStatus {
   draw
   abandoned
   foul_loss
+  timeout
 }
 
 model User {
@@ -57,7 +58,8 @@ model RuleSetPreset {
   creator   User?    @relation(fields: [createdBy], references: [id])
   createdAt DateTime @default(now())
 
-  games Game[]
+  games   Game[]
+  puzzles Puzzle[]
 }
 
 model Game {
@@ -81,6 +83,10 @@ model Game {
   isSenteCpu Boolean @default(false)
   isGoteCpu  Boolean @default(false)
   roomCode   String? @unique // プライベートマッチの部屋コード
+
+  /// 対局全体の持ち時間(ミリ秒、片側あたり)。nullなら時間無制限。サーバー再起動時はGameMove.createdAtの間隔を
+  /// 再生して残り時間を再計算するため、消費済み時間そのものは別カラムに保存していない。
+  timeControlMs Int?
 
   status       GameStatus        @default(waiting)
   resultStatus GameResultStatus?
@@ -114,4 +120,29 @@ model GameMove {
 
   @@unique([gameId, moveNumber])
   @@index([gameId])
+}
+
+/// 詰将棋パズル。AI自己対局の実戦局面から抽出する(docs/AI_ROADMAP.md「関連機能」参照)。
+/// 攻め方=snapshotのturn、詰み手順はsolutionMovesの攻め方の手のみを格納し、受け方の応手は
+/// 出題時にサーバー側(findForcedMate)がその場で計算して補う(=別解も許容できるようにするため)。
+model Puzzle {
+  id String @id @default(cuid())
+
+  ruleSetPresetId String
+  ruleSetPreset   RuleSetPreset @relation(fields: [ruleSetPresetId], references: [id])
+
+  /// 出題局面のスナップショット(盤面・持ち駒・手番)をJSONで保存。RuleSet自体はruleSetPreset側で持つ。
+  snapshot Json
+  /// 検証済みの詰み手順(攻め方・受け方交互のMove配列全体)。参考用/最短性の記録として保持する。
+  solutionMoves Json
+  /// 詰み手数(攻め方の着手回数。例:3手詰めなら3)
+  mateLength Int
+
+  sourceGameId String?
+  /// 自己対局データの中で同種の詰みパターンが何度出現したか(頻出度の目安。生成時に更新)
+  occurrenceCount Int @default(1)
+
+  createdAt DateTime @default(now())
+
+  @@index([mateLength])
 }

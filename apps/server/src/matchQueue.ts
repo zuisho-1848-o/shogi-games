@@ -3,6 +3,7 @@ import { EventEmitter } from "node:events";
 import { Player, RULE_SET_METADATA, RuleSetCategory, getRuleSetById } from "@shogi-games/rule-engine";
 import { createGame, ServerGame } from "./gameManager";
 import { AI_USER_IDS, getAiProfileBySlug } from "./aiProfiles";
+import { redis, withLock } from "./redisClient";
 
 export type QueueMode = "casual" | "randomMatch";
 /** human: 人間の相手だけを待つ。ai: 即座にAIと対局を始める(待機列には並ばない)。
@@ -14,9 +15,16 @@ export type OpponentPreference = "human" | "ai" | "either";
 const RELAX_TIMEOUT_MS = process.env.MATCH_RELAX_TIMEOUT_MS
   ? Number(process.env.MATCH_RELAX_TIMEOUT_MS)
   : 15000;
+/** 待機列は複数のサーバープロセスで共有される(Redis)ため、タイマーの代わりに各プロセスが定期的に
+ * 「緩和/AIフォールバックの時刻を過ぎたエントリがないか」をスイープする方式にしている。 */
+const SWEEP_INTERVAL_MS = 1000;
 
 const ALL_RULE_SET_IDS = RULE_SET_METADATA.map((m) => m.id);
 const DEFAULT_AI_PROFILE_SLUG = "ai_medium";
+
+const REDIS_KEY_ENTRIES = "matchqueue:entries"; // Hash: queueId -> JSON(QueueEntry)
+const REDIS_KEY_SOCKET_INDEX = "matchqueue:socket_index"; // Hash: socketId -> queueId
+const REDIS_KEY_LOCK = "matchqueue:lock";
 
 interface QueueEntry {
   queueId: string;
@@ -25,8 +33,9 @@ interface QueueEntry {
   ruleSetId?: string; // casual
   acceptedRuleSetIds?: string[]; // randomMatch
   enteredAt: number;
-  relaxTimer?: NodeJS.Timeout;
+  relaxAt?: number; // この時刻を過ぎたらルール緩和(randomMatchのみ)
   relaxed?: boolean;
+  aiFallbackAt?: number; // この時刻を過ぎたらAI対局にフォールバック(eitherのみ)
   /** 外部AI/ボットが接続してきた場合、自己申告のフラグ(サーバーは検証しない)。マッチ相手への表示に使う。 */
   isBot?: boolean;
   /** ログイン中のユーザーID(レーティング反映用)。ゲストはundefined。 */
@@ -34,9 +43,6 @@ interface QueueEntry {
   /** 'either'の場合のみ、条件緩和時にAIへフォールバックするために使う希望AI強度。 */
   aiProfileSlug?: string;
 }
-
-const queue: QueueEntry[] = [];
-const queueIdBySocket = new Map<string, string>();
 
 const genId = () => crypto.randomBytes(8).toString("hex");
 
@@ -51,18 +57,40 @@ export interface MatchResult {
   cpuColor?: Player;
 }
 
-/** マッチが成立するたびに'matched'イベントで通知する。即時マッチ・条件緩和後の遅延マッチのどちらもここに集約する。 */
+/** マッチが成立するたびに'matched'イベントで通知する(このプロセス内の待機ソケットへの通知用)。 */
 export const matchEvents = new EventEmitter();
 
-const findCompatibleIndex = (entry: QueueEntry, excludeQueueId?: string): number => {
+// ---- Redisアクセスのヘルパー ----
+
+const readAllEntries = async (): Promise<QueueEntry[]> => {
+  const raw = await redis.hgetall(REDIS_KEY_ENTRIES);
+  return Object.values(raw).map((v) => JSON.parse(v) as QueueEntry);
+};
+
+const writeEntry = async (entry: QueueEntry): Promise<void> => {
+  await redis.hset(REDIS_KEY_ENTRIES, entry.queueId, JSON.stringify(entry));
+  await redis.hset(REDIS_KEY_SOCKET_INDEX, entry.socketId, entry.queueId);
+};
+
+const deleteEntry = async (entry: QueueEntry): Promise<void> => {
+  await redis.hdel(REDIS_KEY_ENTRIES, entry.queueId);
+  await redis.hdel(REDIS_KEY_SOCKET_INDEX, entry.socketId);
+};
+
+const findCompatible = (entries: QueueEntry[], entry: QueueEntry): QueueEntry | null => {
   if (entry.mode === "casual") {
-    return queue.findIndex((q) => q.queueId !== excludeQueueId && q.mode === "casual" && q.ruleSetId === entry.ruleSetId);
+    return (
+      entries.find((q) => q.queueId !== entry.queueId && q.mode === "casual" && q.ruleSetId === entry.ruleSetId) ??
+      null
+    );
   }
-  return queue.findIndex((q) => {
-    if (q.queueId === excludeQueueId || q.mode !== "randomMatch") return false;
-    const a = new Set(q.acceptedRuleSetIds ?? []);
-    return (entry.acceptedRuleSetIds ?? []).some((id) => a.has(id));
-  });
+  const acceptedSelf = new Set(entry.acceptedRuleSetIds ?? []);
+  return (
+    entries.find((q) => {
+      if (q.queueId === entry.queueId || q.mode !== "randomMatch") return false;
+      return (q.acceptedRuleSetIds ?? []).some((id) => acceptedSelf.has(id));
+    }) ?? null
+  );
 };
 
 const buildMatchResult = (a: QueueEntry, b: QueueEntry): MatchResult => {
@@ -133,58 +161,11 @@ const buildAiMatchResult = (entry: QueueEntry): MatchResult => {
   };
 };
 
-const removeFromQueue = (queueId: string): QueueEntry | undefined => {
-  const idx = queue.findIndex((q) => q.queueId === queueId);
-  if (idx === -1) return undefined;
-  const [entry] = queue.splice(idx, 1);
-  if (entry.relaxTimer) clearTimeout(entry.relaxTimer);
-  queueIdBySocket.delete(entry.socketId);
-  return entry;
-};
-
-const scheduleRelax = (queueId: string) => {
-  const timer = setTimeout(() => {
-    const entry = queue.find((q) => q.queueId === queueId);
-    if (!entry || entry.mode !== "randomMatch" || entry.relaxed) return;
-
-    entry.relaxed = true;
-    entry.acceptedRuleSetIds = ALL_RULE_SET_IDS;
-
-    const matchIndex = findCompatibleIndex(entry, entry.queueId);
-    if (matchIndex !== -1) {
-      const opponent = queue[matchIndex];
-      removeFromQueue(entry.queueId);
-      removeFromQueue(opponent.queueId);
-      matchEvents.emit("matched", buildMatchResult(opponent, entry));
-      return;
-    }
-
-    // 相手が見つからなかった場合、either希望ならAIにフォールバックする。
-    scheduleAiFallbackCheck(queueId);
-  }, RELAX_TIMEOUT_MS);
-  timer.unref?.();
-
-  const entry = queue.find((q) => q.queueId === queueId);
-  if (entry) entry.relaxTimer = timer;
-};
-
-/** either希望のエントリを、さらに一定時間待っても相手が見つからなければAI対局にフォールバックさせる。 */
-const scheduleAiFallbackCheck = (queueId: string) => {
-  const timer = setTimeout(() => {
-    const entry = removeFromQueue(queueId);
-    if (!entry) return;
-    matchEvents.emit("matched", buildAiMatchResult(entry));
-  }, RELAX_TIMEOUT_MS);
-  timer.unref?.();
-
-  const entry = queue.find((q) => q.queueId === queueId);
-  if (entry) entry.relaxTimer = timer;
-};
-
 /** キューに参加を試みる。即座にマッチする相手がいればゲームを作成して返す。いなければ待機列に入り、
  * ランダムルールマッチングの場合は一定時間後に条件を自動緩和する。opponentPreferenceが'ai'なら
- * 待機列を経由せず即座にAI対局を作る。'either'は人間優先→時間切れでAIにフォールバックする。 */
-export const joinQueue = (params: {
+ * 待機列を経由せず即座にAI対局を作る。'either'は人間優先→時間切れでAIにフォールバックする。
+ * 待機列はRedis上で複数プロセス間で共有されるため、この関数はasync。 */
+export const joinQueue = async (params: {
   socketId: string;
   mode: QueueMode;
   ruleSetId?: string;
@@ -193,43 +174,106 @@ export const joinQueue = (params: {
   userId?: string;
   opponentPreference?: OpponentPreference;
   aiProfileSlug?: string;
-}): MatchResult | { waiting: true; queueId: string } => {
-  const entry: QueueEntry = {
-    queueId: genId(),
-    socketId: params.socketId,
-    mode: params.mode,
-    ruleSetId: params.ruleSetId,
-    acceptedRuleSetIds: params.acceptedRuleSetIds,
-    enteredAt: Date.now(),
-    isBot: params.isBot,
-    userId: params.userId,
-    aiProfileSlug: params.aiProfileSlug,
-  };
-
+}): Promise<MatchResult | { waiting: true; queueId: string }> => {
   if (params.opponentPreference === "ai") {
+    const entry: QueueEntry = {
+      queueId: genId(),
+      socketId: params.socketId,
+      mode: params.mode,
+      ruleSetId: params.ruleSetId,
+      acceptedRuleSetIds: params.acceptedRuleSetIds,
+      enteredAt: Date.now(),
+      isBot: params.isBot,
+      userId: params.userId,
+      aiProfileSlug: params.aiProfileSlug,
+    };
     return buildAiMatchResult(entry);
   }
 
-  const matchIndex = findCompatibleIndex(entry);
-  if (matchIndex === -1) {
-    queue.push(entry);
-    queueIdBySocket.set(entry.socketId, entry.queueId);
-    if (entry.mode === "randomMatch") {
-      scheduleRelax(entry.queueId);
-    } else if (params.opponentPreference === "either") {
-      // カジュアルマッチはルール緩和という概念がないので、eitherならそのままAIフォールバックのタイマーだけ仕込む。
-      scheduleAiFallbackCheck(entry.queueId);
-    }
-    return { waiting: true, queueId: entry.queueId };
-  }
+  return withLock(REDIS_KEY_LOCK, async () => {
+    const now = Date.now();
+    const entry: QueueEntry = {
+      queueId: genId(),
+      socketId: params.socketId,
+      mode: params.mode,
+      ruleSetId: params.ruleSetId,
+      acceptedRuleSetIds: params.acceptedRuleSetIds,
+      enteredAt: now,
+      isBot: params.isBot,
+      userId: params.userId,
+      aiProfileSlug: params.aiProfileSlug,
+      relaxAt: params.mode === "randomMatch" ? now + RELAX_TIMEOUT_MS : undefined,
+      aiFallbackAt: params.opponentPreference === "either" ? now + RELAX_TIMEOUT_MS : undefined,
+    };
 
-  const opponent = queue[matchIndex];
-  removeFromQueue(opponent.queueId);
-  return buildMatchResult(opponent, entry);
+    const entries = await readAllEntries();
+    const opponent = findCompatible(entries, entry);
+    if (!opponent) {
+      await writeEntry(entry);
+      return { waiting: true, queueId: entry.queueId };
+    }
+
+    await deleteEntry(opponent);
+    return buildMatchResult(opponent, entry);
+  });
 };
 
-export const leaveQueueBySocket = (socketId: string): void => {
-  const queueId = queueIdBySocket.get(socketId);
-  if (!queueId) return;
-  removeFromQueue(queueId);
+export const leaveQueueBySocket = async (socketId: string): Promise<void> => {
+  await withLock(REDIS_KEY_LOCK, async () => {
+    const queueId = await redis.hget(REDIS_KEY_SOCKET_INDEX, socketId);
+    if (!queueId) return;
+    await redis.hdel(REDIS_KEY_ENTRIES, queueId);
+    await redis.hdel(REDIS_KEY_SOCKET_INDEX, socketId);
+  });
+};
+
+/** 定期的に待機列を確認し、緩和/AIフォールバックの時刻を過ぎたエントリを処理する。
+ * 複数プロセスが同時に起動していても、ロックのおかげで二重処理は起きない。 */
+const sweep = async (): Promise<void> => {
+  await withLock(REDIS_KEY_LOCK, async () => {
+    const now = Date.now();
+    let entries = await readAllEntries();
+    let changed = true;
+
+    while (changed) {
+      changed = false;
+
+      for (const entry of entries) {
+        if (entry.mode === "randomMatch" && !entry.relaxed && entry.relaxAt && entry.relaxAt <= now) {
+          entry.relaxed = true;
+          entry.acceptedRuleSetIds = ALL_RULE_SET_IDS;
+          await writeEntry(entry);
+
+          const opponent = findCompatible(entries, entry);
+          if (opponent) {
+            await deleteEntry(entry);
+            await deleteEntry(opponent);
+            entries = entries.filter((e) => e.queueId !== entry.queueId && e.queueId !== opponent.queueId);
+            matchEvents.emit("matched", buildMatchResult(opponent, entry));
+            changed = true;
+            break;
+          }
+        }
+
+        if (entry.aiFallbackAt && entry.aiFallbackAt <= now) {
+          await deleteEntry(entry);
+          entries = entries.filter((e) => e.queueId !== entry.queueId);
+          matchEvents.emit("matched", buildAiMatchResult(entry));
+          changed = true;
+          break;
+        }
+      }
+    }
+  });
+};
+
+let sweepTimer: NodeJS.Timeout | undefined;
+
+/** サーバー起動時に1回呼ぶ。プロセスごとに1つのスイープタイマーを回す。 */
+export const startMatchQueueSweeper = (): void => {
+  if (sweepTimer) return;
+  sweepTimer = setInterval(() => {
+    sweep().catch((e) => console.error("matchQueue sweep failed", e));
+  }, SWEEP_INTERVAL_MS);
+  sweepTimer.unref?.();
 };

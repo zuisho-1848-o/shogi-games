@@ -33,6 +33,8 @@ const resultLine = (result: GameResult, moveNumber: number): string | null => {
       return result.reason === "jishogi" ? `${n} 持将棋(引き分け)` : `${n} 千日手`;
     case "jishogi_win":
       return `${n} 持将棋(入玉勝ち)`;
+    case "timeout":
+      return `${n} 時間切れ`;
     default:
       return null;
   }

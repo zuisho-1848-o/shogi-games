@@ -1,0 +1,58 @@
+# 補助的なDocker構成(docs/DEPLOYMENT.mdの「Docker(補足・任意)」参照)。
+# 本番の主運用はPM2直接運用だが、ローカル動作確認や将来のコンテナベース移行の土台として用意している。
+#
+# 使い方:
+#   cp .env.docker.example .env
+#   docker compose up --build
+#   (初回のみ、別ターミナルでマイグレーションを流す)
+#   docker compose exec server sh -c "cd /repo/packages/db && npx prisma migrate deploy"
+
+services:
+  mysql:
+    image: mysql:8.4
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: shogi_games
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-changeme}
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+
+  server:
+    build:
+      context: .
+      dockerfile: apps/server/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      - mysql
+      - redis
+    environment:
+      PORT: 4000
+      WEB_ORIGIN: ${WEB_ORIGIN:-http://localhost:3100}
+      JWT_SECRET: ${JWT_SECRET:-changeme}
+      REDIS_URL: redis://redis:6379
+      DATABASE_URL: mysql://root:${MYSQL_ROOT_PASSWORD:-changeme}@mysql:3306/shogi_games
+    ports:
+      - "4000:4000"
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      args:
+        NEXT_PUBLIC_SERVER_URL: ${NEXT_PUBLIC_SERVER_URL:-http://localhost:4000}
+    restart: unless-stopped
+    depends_on:
+      - server
+    ports:
+      - "3100:3100"
+
+volumes:
+  mysql_data:

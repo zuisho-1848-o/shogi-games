@@ -34,6 +34,7 @@ export default function LobbyPage() {
   const [aiProfiles, setAiProfiles] = useState<AiProfileMeta[]>([]);
   const [aiProfileSlug, setAiProfileSlug] = useState("ai_medium");
   const [opponentPreference, setOpponentPreference] = useState<OpponentPreference>("human");
+  const [timeControlMinutes, setTimeControlMinutes] = useState<number>(0); // 0 = 時間無制限
 
   const matchmaking = useMatchmaking();
 
@@ -50,7 +51,12 @@ export default function LobbyPage() {
     setBusy(true);
     setError(null);
     try {
-      const res = await createCpuGame("sente", ruleSetId, aiProfileSlug);
+      const res = await createCpuGame(
+        "sente",
+        ruleSetId,
+        aiProfileSlug,
+        timeControlMinutes > 0 ? timeControlMinutes * 60_000 : undefined
+      );
       saveSession(res.gameId, { playerToken: res.playerToken, yourColor: res.yourColor });
       router.push(`/game/${res.gameId}`);
     } catch (e) {
@@ -64,7 +70,11 @@ export default function LobbyPage() {
     setBusy(true);
     setError(null);
     try {
-      const res = await createPrivateGame("sente", ruleSetId);
+      const res = await createPrivateGame(
+        "sente",
+        ruleSetId,
+        timeControlMinutes > 0 ? timeControlMinutes * 60_000 : undefined
+      );
       saveSession(res.gameId, {
         playerToken: res.playerToken,
         yourColor: res.yourColor,
@@ -136,6 +146,9 @@ export default function LobbyPage() {
         <button className="underline text-neutral-500" onClick={() => router.push("/ai-arena")}>
           AI同士の対局を観戦
         </button>
+        <button className="underline text-neutral-500" onClick={() => router.push("/puzzles")}>
+          詰将棋
+        </button>
       </div>
 
       <div className="flex flex-col gap-4 w-full max-w-md">
@@ -175,6 +188,21 @@ export default function LobbyPage() {
                 {p.name}
               </option>
             ))}
+          </select>
+        </label>
+
+        <label className="flex flex-col gap-1">
+          <span className="text-sm text-neutral-600">持ち時間(CPU戦・プライベートマッチ共通)</span>
+          <select
+            value={timeControlMinutes}
+            onChange={(e) => setTimeControlMinutes(Number(e.target.value))}
+            className="border border-neutral-300 rounded px-3 py-2"
+          >
+            <option value={0}>時間無制限</option>
+            <option value={3}>3分切れ負け</option>
+            <option value={5}>5分切れ負け</option>
+            <option value={10}>10分切れ負け</option>
+            <option value={30}>30分切れ負け</option>
           </select>
         </label>
 

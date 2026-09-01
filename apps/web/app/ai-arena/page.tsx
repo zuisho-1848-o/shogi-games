@@ -2,7 +2,13 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { AiProfileMeta, createAiVsAiGame, fetchAiProfiles } from "../../lib/api";
+import {
+  AiProfileMeta,
+  createAiVsAiGame,
+  fetchAiProfiles,
+  runSelfPlayBatch,
+  SelfPlayGameSummary,
+} from "../../lib/api";
 import { fetchRuleSets, RuleSetMeta } from "../../lib/ruleSets";
 
 export default function AiArenaPage() {
@@ -14,6 +20,11 @@ export default function AiArenaPage() {
   const [ruleSetId, setRuleSetId] = useState("standard");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const [batchCount, setBatchCount] = useState(3);
+  const [batchBusy, setBatchBusy] = useState(false);
+  const [batchResults, setBatchResults] = useState<SelfPlayGameSummary[] | null>(null);
+  const [batchError, setBatchError] = useState<string | null>(null);
 
   useEffect(() => {
     fetchAiProfiles().then(setProfiles).catch(() => {});
@@ -30,6 +41,25 @@ export default function AiArenaPage() {
       setError(String(e));
     } finally {
       setBusy(false);
+    }
+  };
+
+  const runBatch = async () => {
+    setBatchBusy(true);
+    setBatchError(null);
+    setBatchResults(null);
+    try {
+      const res = await runSelfPlayBatch({
+        ruleSetId,
+        senteAiProfileSlug: senteSlug,
+        goteAiProfileSlug: goteSlug,
+        count: batchCount,
+      });
+      setBatchResults(res.games);
+    } catch (e) {
+      setBatchError(String(e));
+    } finally {
+      setBatchBusy(false);
     }
   };
 
@@ -95,6 +125,43 @@ export default function AiArenaPage() {
         >
           対局を開始して観戦する
         </button>
+
+        <div className="border-t pt-4 flex flex-col gap-2">
+          <span className="text-sm font-medium">自己対局バッチ生成(AI Stage3: データ収集用)</span>
+          <p className="text-xs text-neutral-500">
+            観戦せずに、上で選んだ2つのAIを指定局数まとめて対局させます(1局ずつ順番に実行するため、強いAI同士だと1局あたり数十秒〜数分かかることがあります)。結果は棋譜としてDBに保存され、レーティングにも反映されます。
+          </p>
+          <div className="flex items-center gap-2">
+            <label className="text-sm text-neutral-600">局数</label>
+            <input
+              type="number"
+              min={1}
+              max={20}
+              value={batchCount}
+              onChange={(e) => setBatchCount(Number(e.target.value))}
+              className="w-20 border border-neutral-300 rounded px-2 py-1"
+            />
+            <button
+              disabled={batchBusy}
+              onClick={runBatch}
+              className="px-3 py-2 rounded border border-neutral-900 hover:bg-neutral-100 disabled:opacity-50 text-sm"
+            >
+              {batchBusy ? "実行中…" : "バッチ実行"}
+            </button>
+          </div>
+          {batchError && <p className="text-red-600 text-sm">{batchError}</p>}
+          {batchResults && (
+            <ul className="text-xs text-neutral-600 flex flex-col gap-1">
+              {batchResults.map((g) => (
+                <li key={g.gameId}>
+                  {g.gameId.slice(0, 8)}: {g.moveCount}手 / {g.result.status}
+                  {g.result.winner ? `(${g.result.winner === "sente" ? "先手" : "後手"}勝ち)` : ""} /{" "}
+                  {(g.durationMs / 1000).toFixed(1)}秒
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
       </div>
 
       <button className="text-sm underline text-neutral-500" onClick={() => router.push("/")}>

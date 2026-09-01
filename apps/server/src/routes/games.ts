@@ -12,6 +12,8 @@ import { ensureRuleSetPreset, prisma } from "../db";
 import { getUserIdFromRequest } from "../auth";
 import { AI_PROFILES, AI_USER_IDS, getAiProfileBySlug } from "../aiProfiles";
 import { analyzeGameHistory } from "../analysis";
+import { playSelfPlayBatch } from "../selfPlay";
+import { gameCreationRateLimiter } from "../rateLimit";
 
 export const gamesRouter = Router();
 
@@ -39,6 +41,15 @@ const userIdFields = (color: Player, userId: string | undefined) => {
   return color === "sente" ? { senteUserId: userId } : { goteUserId: userId };
 };
 
+const MIN_TIME_CONTROL_MS = 60_000; // 1分
+const MAX_TIME_CONTROL_MS = 3_600_000; // 60分
+
+const resolveTimeControlMs = (value: unknown): number | undefined => {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return undefined;
+  return Math.min(MAX_TIME_CONTROL_MS, Math.max(MIN_TIME_CONTROL_MS, Math.floor(n)));
+};
+
 gamesRouter.get("/rule-sets", (_req, res) => {
   res.json({ ruleSets: RULE_SET_METADATA });
 });
@@ -47,7 +58,7 @@ gamesRouter.get("/ai-profiles", (_req, res) => {
   res.json({ profiles: AI_PROFILES.map((p) => ({ slug: p.slug, name: p.name })) });
 });
 
-gamesRouter.post("/cpu", async (req, res) => {
+gamesRouter.post("/cpu", gameCreationRateLimiter, async (req, res) => {
   const humanColor: Player = req.body?.color === "gote" ? "gote" : "sente";
   const userId = getUserIdFromRequest(req) ?? undefined;
 
@@ -61,6 +72,7 @@ gamesRouter.post("/cpu", async (req, res) => {
 
   const aiProfile = getAiProfileBySlug(typeof req.body?.aiProfileSlug === "string" ? req.body.aiProfileSlug : "") ?? AI_PROFILES[1];
   const opponentAiUserId = AI_USER_IDS.get(aiProfile.slug);
+  const timeControlMs = resolveTimeControlMs(req.body?.timeControlMs);
 
   const { game, playerToken } = createGame({
     mode: "cpu",
@@ -70,6 +82,7 @@ gamesRouter.post("/cpu", async (req, res) => {
     humanUserId: userId,
     opponentAiProfile: aiProfile,
     opponentAiUserId,
+    timeControlMs,
   });
 
   const opponentColor: Player = humanColor === "sente" ? "gote" : "sente";
@@ -83,6 +96,7 @@ gamesRouter.post("/cpu", async (req, res) => {
       startedAt: new Date(),
       isSenteCpu: humanColor === "gote",
       isGoteCpu: humanColor === "sente",
+      timeControlMs,
       ...tokenFields(humanColor, playerToken),
       ...userIdFields(humanColor, userId),
       ...userIdFields(opponentColor, opponentAiUserId),
@@ -100,7 +114,7 @@ gamesRouter.post("/cpu", async (req, res) => {
   });
 });
 
-gamesRouter.post("/private", async (req, res) => {
+gamesRouter.post("/private", gameCreationRateLimiter, async (req, res) => {
   const humanColor: Player = req.body?.color === "gote" ? "gote" : "sente";
   const userId = getUserIdFromRequest(req) ?? undefined;
 
@@ -112,12 +126,15 @@ gamesRouter.post("/private", async (req, res) => {
     return;
   }
 
+  const timeControlMs = resolveTimeControlMs(req.body?.timeControlMs);
+
   const { game, playerToken } = createGame({
     mode: "private",
     ruleSet: resolved.ruleSet,
     humanColor,
     isOpponentCpu: false,
     humanUserId: userId,
+    timeControlMs,
   });
 
   const ruleSetPresetId = await ensureRuleSetPreset(resolved.ruleSet);
@@ -128,6 +145,7 @@ gamesRouter.post("/private", async (req, res) => {
       ruleSetPresetId,
       status: "waiting",
       roomCode: game.roomCode,
+      timeControlMs,
       ...tokenFields(humanColor, playerToken),
       ...userIdFields(humanColor, userId),
     },
@@ -144,7 +162,7 @@ gamesRouter.post("/private", async (req, res) => {
   });
 });
 
-gamesRouter.post("/private/join", async (req, res) => {
+gamesRouter.post("/private/join", gameCreationRateLimiter, async (req, res) => {
   const roomCode = String(req.body?.roomCode ?? "");
   const userId = getUserIdFromRequest(req) ?? undefined;
   const result = joinPrivateGame(roomCode, userId);
@@ -154,6 +172,10 @@ gamesRouter.post("/private/join", async (req, res) => {
   }
 
   const { game, playerToken, color } = result;
+  if (game.timeControl) {
+    // 相手を待っている間は時計を進めたくないので、実際に対局が始まる(2人目が参加した)タイミングでリセットする。
+    game.timeControl.turnStartedAt = Date.now();
+  }
   if (game.dbGameId) {
     await prisma.game.update({
       where: { id: game.dbGameId },
@@ -169,7 +191,7 @@ gamesRouter.post("/private/join", async (req, res) => {
   res.json({ gameId: game.id, playerToken, yourColor: color, mode: "private", ruleSetId: game.ruleSet.id });
 });
 
-gamesRouter.post("/ai-vs-ai", async (req, res) => {
+gamesRouter.post("/ai-vs-ai", gameCreationRateLimiter, async (req, res) => {
   let resolved: { ruleSet: RuleSet; ruleSetId: string };
   try {
     resolved = resolveRuleSet(req.body ?? {});
@@ -237,4 +259,36 @@ gamesRouter.get("/:gameId/analysis", async (req, res) => {
 
   const analysis = analyzeGameHistory(game.ruleSet, game.state.history);
   res.json({ gameId: game.id, analysis });
+});
+
+const MAX_SELF_PLAY_BATCH = 20;
+
+gamesRouter.post("/self-play-batch", gameCreationRateLimiter, async (req, res) => {
+  let resolved: { ruleSet: RuleSet; ruleSetId: string };
+  try {
+    resolved = resolveRuleSet(req.body ?? {});
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : "invalid_rule_set" });
+    return;
+  }
+
+  const senteProfile = getAiProfileBySlug(req.body?.senteAiProfileSlug) ?? AI_PROFILES[1];
+  const goteProfile = getAiProfileBySlug(req.body?.goteAiProfileSlug) ?? AI_PROFILES[1];
+  const rawCount = Number(req.body?.count ?? 1);
+  const count = Number.isFinite(rawCount) ? Math.min(MAX_SELF_PLAY_BATCH, Math.max(1, Math.floor(rawCount))) : 1;
+
+  // 対局は思考時間の分だけ実時間がかかるため(例: ai_hard同士だと1手3秒程度)、まとめて多数生成すると
+  // このHTTPリクエスト自体が長時間ブロックする。MAX_SELF_PLAY_BATCHで上限を設けているのはそのため。
+  // 本格的なバッチ生成(数百局規模)にはバックグラウンドジョブキューへの移行が必要(AI Stage3の発展課題)。
+  try {
+    const summaries = await playSelfPlayBatch({ ruleSet: resolved.ruleSet, senteProfile, goteProfile, count });
+    res.json({
+      ruleSetId: resolved.ruleSetId,
+      senteProfile: senteProfile.slug,
+      goteProfile: goteProfile.slug,
+      games: summaries,
+    });
+  } catch (e) {
+    res.status(500).json({ error: e instanceof Error ? e.message : "self_play_failed" });
+  }
 });

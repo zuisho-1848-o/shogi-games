@@ -30,12 +30,13 @@ export interface CustomSetup {
 export const createCpuGame = async (
   color: "sente" | "gote",
   ruleSetId: string,
-  aiProfileSlug?: string
+  aiProfileSlug?: string,
+  timeControlMs?: number
 ): Promise<CreateGameResponse> => {
   const res = await fetch(`${SERVER_URL}/api/games/cpu`, {
     method: "POST",
     headers: { "Content-Type": "application/json", ...authHeaders() },
-    body: JSON.stringify({ color, ruleSetId, aiProfileSlug }),
+    body: JSON.stringify({ color, ruleSetId, aiProfileSlug, timeControlMs }),
   });
   if (!res.ok) throw new Error("failed to create cpu game");
   return res.json();
@@ -43,12 +44,13 @@ export const createCpuGame = async (
 
 export const createPrivateGame = async (
   color: "sente" | "gote",
-  ruleSetId: string
+  ruleSetId: string,
+  timeControlMs?: number
 ): Promise<CreateGameResponse> => {
   const res = await fetch(`${SERVER_URL}/api/games/private`, {
     method: "POST",
     headers: { "Content-Type": "application/json", ...authHeaders() },
-    body: JSON.stringify({ color, ruleSetId }),
+    body: JSON.stringify({ color, ruleSetId, timeControlMs }),
   });
   if (!res.ok) throw new Error("failed to create private game");
   return res.json();
@@ -124,6 +126,28 @@ export const createAiVsAiGame = async (params: {
   return res.json();
 };
 
+export interface SelfPlayGameSummary {
+  gameId: string;
+  moveCount: number;
+  result: { status: string; winner?: "sente" | "gote"; reason?: string };
+  durationMs: number;
+}
+
+export const runSelfPlayBatch = async (params: {
+  ruleSetId: string;
+  senteAiProfileSlug: string;
+  goteAiProfileSlug: string;
+  count: number;
+}): Promise<{ games: SelfPlayGameSummary[] }> => {
+  const res = await fetch(`${SERVER_URL}/api/games/self-play-batch`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(params),
+  });
+  if (!res.ok) throw new Error("failed to run self-play batch");
+  return res.json();
+};
+
 export interface LeaderboardUser {
   id: string;
   name: string;
@@ -170,4 +194,61 @@ export const saveSession = (gameId: string, session: StoredSession) => {
 export const loadSession = (gameId: string): StoredSession | null => {
   const raw = sessionStorage.getItem(sessionKey(gameId));
   return raw ? JSON.parse(raw) : null;
+};
+
+export interface PuzzleListItem {
+  id: string;
+  ruleSetName: string;
+  mateLength: number;
+  occurrenceCount: number;
+}
+
+export const fetchPuzzles = async (): Promise<PuzzleListItem[]> => {
+  const res = await fetch(`${SERVER_URL}/api/puzzles`);
+  if (!res.ok) throw new Error("failed to fetch puzzles");
+  const data = await res.json();
+  return data.puzzles;
+};
+
+export interface PuzzleSnapshot {
+  board: { row: number; col: number; kind: string; owner: "sente" | "gote"; promoted: boolean }[];
+  hands: Record<"sente" | "gote", Record<string, number>>;
+  attacker: "sente" | "gote";
+}
+
+export interface PuzzleDetail {
+  id: string;
+  ruleSetName: string;
+  boardWidth: number;
+  boardHeight: number;
+  snapshot: PuzzleSnapshot;
+  mateLength: number;
+  occurrenceCount: number;
+}
+
+export const fetchPuzzle = async (id: string): Promise<PuzzleDetail> => {
+  const res = await fetch(`${SERVER_URL}/api/puzzles/${id}`);
+  if (!res.ok) throw new Error("failed to fetch puzzle");
+  return res.json();
+};
+
+export interface PuzzleAttemptResponse {
+  solved: boolean;
+  correct: boolean;
+  message: string;
+  defenderReply?: Move;
+  snapshot: PuzzleSnapshot;
+}
+
+export const attemptPuzzleMove = async (
+  puzzleId: string,
+  movesSoFar: Move[],
+  move: Move
+): Promise<PuzzleAttemptResponse> => {
+  const res = await fetch(`${SERVER_URL}/api/puzzles/${puzzleId}/attempt`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ movesSoFar, move }),
+  });
+  return res.json();
 };

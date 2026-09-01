@@ -9,8 +9,8 @@ build/
 
 # Env files (contain secrets / local DB credentials)
 .env
-.env.local
-.env.*.local
+.env.*
+!.env.example
 
 # Prisma
 packages/db/generated/
@@ -18,6 +18,14 @@ packages/db/generated/
 # Logs
 *.log
 npm-debug.log*
+logs/
+
+# 自己対局チューニングで生成される重みファイル(npm run tune:weightsで再生成できる)
+apps/server/src/ai/tuned-weights.json
+
+# 外部USIエンジン(やねうら王)のソース/ビルド成果物。サイズが大きく、各自の環境でビルドする想定なので追跡しない。
+# 詳細はdocs/AI_ROADMAP.md参照。
+vendor/
 
 # OS files
 .DS_Store

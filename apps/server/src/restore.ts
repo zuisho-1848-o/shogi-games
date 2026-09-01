@@ -1,5 +1,5 @@
-import { GameState, Move, Player, RuleSet } from "@shogi-games/rule-engine";
-import { GameMode, ServerGame, registerRestoredGame } from "./gameManager";
+import { GameState, Move, Player, RuleSet, opponentOf } from "@shogi-games/rule-engine";
+import { GameMode, ServerGame, TimeControlState, registerRestoredGame } from "./gameManager";
 import { prisma } from "./db";
 import { getAiProfileByUserId } from "./aiProfiles";
 
@@ -44,6 +44,22 @@ export const restoreGamesFromDb = async (): Promise<void> => {
       const senteAiProfile = dbGame.isSenteCpu && dbGame.senteUserId ? getAiProfileByUserId(dbGame.senteUserId) : undefined;
       const goteAiProfile = dbGame.isGoteCpu && dbGame.goteUserId ? getAiProfileByUserId(dbGame.goteUserId) : undefined;
 
+      // 持ち時間制の場合、指し手のタイムスタンプ間隔を再生して残り時間を概算復元する。
+      // サーバーが落ちていた時間そのものはどちらの持ち時間にも計上しない(再開時点から手番側の時計を再スタートする)。
+      let timeControl: TimeControlState | undefined;
+      if (dbGame.timeControlMs) {
+        const remainingMs: Record<Player, number> = { sente: dbGame.timeControlMs, gote: dbGame.timeControlMs };
+        let prevTimestamp = (dbGame.startedAt ?? dbGame.createdAt).getTime();
+        let turnAtMove: Player = "sente";
+        for (const m of dbGame.moves) {
+          const elapsed = m.createdAt.getTime() - prevTimestamp;
+          remainingMs[turnAtMove] = Math.max(0, remainingMs[turnAtMove] - elapsed);
+          prevTimestamp = m.createdAt.getTime();
+          turnAtMove = opponentOf(turnAtMove);
+        }
+        timeControl = { totalMs: dbGame.timeControlMs, remainingMs, turnStartedAt: Date.now() };
+      }
+
       const game: ServerGame = {
         id: dbGame.engineGameId,
         mode: dbGame.mode as GameMode,
@@ -65,6 +81,7 @@ export const restoreGamesFromDb = async (): Promise<void> => {
         roomCode: dbGame.roomCode ?? undefined,
         dbGameId: dbGame.id,
         createdAt: dbGame.createdAt.getTime(),
+        timeControl,
       };
 
       registerRestoredGame(game);

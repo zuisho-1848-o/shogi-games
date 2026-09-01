@@ -14,7 +14,8 @@ export type GameResult =
   | { status: "resigned"; winner: Player }
   | { status: "draw"; reason: "sennichite" | "jishogi" }
   | { status: "foul_loss"; winner: Player; reason: "perpetual_check" }
-  | { status: "jishogi_win"; winner: Player };
+  | { status: "jishogi_win"; winner: Player }
+  | { status: "timeout"; winner: Player };
 
 /** 持将棋(27点法)の駒点。飛車・角(および成った馬・龍)は5点、王は0点、それ以外は1点という一般的な数え方。 */
 const PIECE_POINTS: Record<string, number> = {
@@ -202,6 +203,12 @@ export class GameState {
 
   resign(player: Player): void {
     this.result = { status: "resigned", winner: opponentOf(player) };
+  }
+
+  /** 持ち時間切れによる時間切れ負け。playerが時間切れになった側。 */
+  timeout(player: Player): void {
+    if (this.result.status !== "in_progress") return;
+    this.result = { status: "timeout", winner: opponentOf(player) };
   }
 }
 

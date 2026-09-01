@@ -10,6 +10,10 @@
     "dev:server": "npm run dev -w apps/server",
     "build": "npm run build -w packages/rule-engine && npm run build -w apps/server && npm run build -w apps/web",
     "prisma:generate": "npm run generate -w packages/db",
-    "prisma:migrate": "npm run migrate -w packages/db"
+    "prisma:migrate": "npm run migrate -w packages/db",
+    "prisma:migrate:deploy": "npm run migrate:deploy -w packages/db",
+    "deploy:build": "npm ci && npm run prisma:generate && npm run build",
+    "pm2:start": "pm2 start ecosystem.config.js",
+    "pm2:reload": "pm2 reload ecosystem.config.js --update-env"
   }
 }

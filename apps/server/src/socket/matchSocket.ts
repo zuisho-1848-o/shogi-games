@@ -10,6 +10,10 @@ import {
 } from "../matchQueue";
 import { ensureRuleSetPreset, prisma } from "../db";
 import { verifyToken } from "../auth";
+import { checkSocketRateLimit, clearSocketRateLimit } from "../rateLimit";
+
+const QUEUE_JOIN_RATE_LIMIT = 10; // 1分あたりの最大キュー参加回数(連投防止)
+const QUEUE_JOIN_RATE_WINDOW_MS = 60 * 1000;
 
 const validRuleSetId = (id: unknown): id is string =>
   typeof id === "string" && RULE_SET_METADATA.some((m) => m.id === id);
@@ -43,12 +47,16 @@ export const registerMatchSocket = (io: Server) => {
         aiProfileSlug?: unknown;
         token?: unknown;
       }) => {
+        if (!checkSocketRateLimit(`${socket.id}:queueJoin`, QUEUE_JOIN_RATE_LIMIT, QUEUE_JOIN_RATE_WINDOW_MS)) {
+          socket.emit("queue:error", { message: "rate_limited" });
+          return;
+        }
         if (!validRuleSetId(payload.ruleSetId)) {
           socket.emit("queue:error", { message: "invalid_rule_set" });
           return;
         }
 
-        const result = joinQueue({
+        const result = await joinQueue({
           socketId: socket.id,
           mode: "casual",
           ruleSetId: payload.ruleSetId,
@@ -74,6 +82,10 @@ export const registerMatchSocket = (io: Server) => {
         aiProfileSlug?: unknown;
         token?: unknown;
       }) => {
+        if (!checkSocketRateLimit(`${socket.id}:queueJoin`, QUEUE_JOIN_RATE_LIMIT, QUEUE_JOIN_RATE_WINDOW_MS)) {
+          socket.emit("queue:error", { message: "rate_limited" });
+          return;
+        }
         if (!validCategories(payload.categories)) {
           socket.emit("queue:error", { message: "invalid_categories" });
           return;
@@ -85,7 +97,7 @@ export const registerMatchSocket = (io: Server) => {
           return;
         }
 
-        const result = joinQueue({
+        const result = await joinQueue({
           socketId: socket.id,
           mode: "randomMatch",
           acceptedRuleSetIds,
@@ -102,13 +114,14 @@ export const registerMatchSocket = (io: Server) => {
       }
     );
 
-    socket.on("queue:leave", () => {
-      leaveQueueBySocket(socket.id);
+    socket.on("queue:leave", async () => {
+      await leaveQueueBySocket(socket.id);
       socket.emit("queue:left");
     });
 
-    socket.on("disconnect", () => {
-      leaveQueueBySocket(socket.id);
+    socket.on("disconnect", async () => {
+      await leaveQueueBySocket(socket.id);
+      clearSocketRateLimit(socket.id);
     });
   });
 };

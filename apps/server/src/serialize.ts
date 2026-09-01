@@ -22,6 +22,8 @@ export interface ClientGameState {
   bothPlayersConnected: boolean;
   /** サーバー内蔵CPU、または外部AI(ボット)が対局相手かどうか(自己申告ベース)。UIでの表示にのみ使う。 */
   opponentIsCpuOrBot: Partial<Record<Player, boolean>>;
+  /** 持ち時間制が有効な対局のみ設定される。remainingMsは「今この瞬間」時点の残り時間(手番側は経過分を差し引いた値)。 */
+  timeControl?: { totalMs: number; remainingMs: Record<Player, number> };
 }
 
 export const serializeGame = (game: ServerGame, viewerColor: Player | null): ClientGameState => {
@@ -55,5 +57,18 @@ export const serializeGame = (game: ServerGame, viewerColor: Player | null): Cli
     roomCode: game.roomCode,
     bothPlayersConnected: game.mode === "cpu" ? true : Object.keys(game.tokens).length >= 2,
     opponentIsCpuOrBot: { ...game.cpuColors, ...game.declaredBots },
+    timeControl: game.timeControl
+      ? {
+          totalMs: game.timeControl.totalMs,
+          remainingMs: {
+            sente:
+              game.timeControl.remainingMs.sente -
+              (state.turn === "sente" && state.result.status === "in_progress" ? Date.now() - game.timeControl.turnStartedAt : 0),
+            gote:
+              game.timeControl.remainingMs.gote -
+              (state.turn === "gote" && state.result.status === "in_progress" ? Date.now() - game.timeControl.turnStartedAt : 0),
+          },
+        }
+      : undefined,
   };
 };

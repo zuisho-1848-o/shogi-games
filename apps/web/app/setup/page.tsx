@@ -26,6 +26,50 @@ const squareKey = (row: number, col: number) => `${row},${col}`;
 
 const editableRowsFor = (owner: Player) => (owner === "sente" ? SENTE_EDITABLE_ROWS : GOTE_EDITABLE_ROWS);
 
+const Palette = ({
+  owner,
+  armed,
+  remaining,
+  onPaletteClick,
+  onReset,
+  onClear,
+}: {
+  owner: Player;
+  armed: string | null;
+  remaining: (owner: Player, kind: string) => number;
+  onPaletteClick: (owner: Player, kind: string) => void;
+  onReset: (owner: Player) => void;
+  onClear: (owner: Player) => void;
+}) => (
+  <div className="flex flex-col gap-1 items-center">
+    <div className="flex items-center gap-2">
+      <span className="text-sm font-medium">{owner === "sente" ? "先手" : "後手"}の駒</span>
+      <button className="text-xs underline text-neutral-500" onClick={() => onReset(owner)}>
+        標準配置にする
+      </button>
+      <button className="text-xs underline text-neutral-500" onClick={() => onClear(owner)}>
+        クリア
+      </button>
+    </div>
+    <div className="flex gap-1.5 flex-wrap justify-center max-w-2xl">
+      {Object.keys(STANDARD_PIECE_POOL).map((kind) => (
+        <button
+          key={kind}
+          onClick={() => onPaletteClick(owner, kind)}
+          disabled={remaining(owner, kind) <= 0}
+          className={[
+            "px-2 py-1.5 border rounded text-sm",
+            armed === kind ? "bg-amber-300 border-amber-600" : "bg-white border-neutral-300",
+            remaining(owner, kind) <= 0 ? "opacity-40" : "hover:bg-amber-100",
+          ].join(" ")}
+        >
+          {pieceLabel(kind)} 残り{remaining(owner, kind)}
+        </button>
+      ))}
+    </div>
+  </div>
+);
+
 export default function SetupPage() {
   const router = useRouter();
   const [placement, setPlacement] = useState<Placement>({});
@@ -138,36 +182,6 @@ export default function SetupPage() {
     }
   };
 
-  const Palette = ({ owner }: { owner: Player }) => (
-    <div className="flex flex-col gap-1 items-center">
-      <div className="flex items-center gap-2">
-        <span className="text-sm font-medium">{owner === "sente" ? "先手" : "後手"}の駒</span>
-        <button className="text-xs underline text-neutral-500" onClick={() => resetToStandard(owner)}>
-          標準配置にする
-        </button>
-        <button className="text-xs underline text-neutral-500" onClick={() => clearSide(owner)}>
-          クリア
-        </button>
-      </div>
-      <div className="flex gap-1.5 flex-wrap justify-center max-w-2xl">
-        {Object.keys(STANDARD_PIECE_POOL).map((kind) => (
-          <button
-            key={kind}
-            onClick={() => handlePaletteClick(owner, kind)}
-            disabled={remaining(owner, kind) <= 0}
-            className={[
-              "px-2 py-1.5 border rounded text-sm",
-              armed[owner] === kind ? "bg-amber-300 border-amber-600" : "bg-white border-neutral-300",
-              remaining(owner, kind) <= 0 ? "opacity-40" : "hover:bg-amber-100",
-            ].join(" ")}
-          >
-            {pieceLabel(kind)} 残り{remaining(owner, kind)}
-          </button>
-        ))}
-      </div>
-    </div>
-  );
-
   return (
     <main className="min-h-screen flex flex-col items-center gap-4 p-8">
       <h1 className="text-2xl font-bold">自由配置将棋（先手・後手ともに自由に配置できます）</h1>
@@ -175,7 +189,14 @@ export default function SetupPage() {
         上4段が後手陣地、下4段が先手陣地です(中央の1段は誰も置けない中立地帯)。駒パレットから駒を選び、自陣のマスをクリックして配置してください。もう一度クリックで解除できます。玉はそれぞれ必ず1枚配置してください。
       </p>
 
-      <Palette owner="gote" />
+      <Palette
+        owner="gote"
+        armed={armedGote}
+        remaining={remaining}
+        onPaletteClick={handlePaletteClick}
+        onReset={resetToStandard}
+        onClear={clearSide}
+      />
 
       <div
         className="inline-grid border-2 border-neutral-800 bg-amber-100"
@@ -212,7 +233,14 @@ export default function SetupPage() {
         )}
       </div>
 
-      <Palette owner="sente" />
+      <Palette
+        owner="sente"
+        armed={armedSente}
+        remaining={remaining}
+        onPaletteClick={handlePaletteClick}
+        onReset={resetToStandard}
+        onClear={clearSide}
+      />
 
       {!hasGoteKing && <p className="text-amber-700 text-sm">後手の玉を1枚配置してください</p>}
       {!hasSenteKing && <p className="text-amber-700 text-sm">先手の玉を1枚配置してください</p>}

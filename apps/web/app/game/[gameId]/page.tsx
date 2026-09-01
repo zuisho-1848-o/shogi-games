@@ -35,19 +35,20 @@ const ClockPanel = ({
   remainingMs,
   isActive,
   receivedAt,
-  tick,
+  now,
 }: {
   color: Player;
   totalMs: number;
   remainingMs: number;
   isActive: boolean;
   receivedAt: number;
-  tick: number;
+  now: number;
 }) => {
-  // サーバーからのスナップショット(remainingMs, receivedAt時点)を、手番側のみクライアント側で1秒ごとに減算して表示する。
-  const displayed = isActive ? remainingMs - (Date.now() - receivedAt) : remainingMs;
+  // サーバーからのスナップショット(remainingMs, receivedAt時点)を、手番側のみ1秒ごとに更新される
+  // now(現在時刻)を使って減算表示する。Date.now()を描画中に直接呼ぶと不純な処理になるため、
+  // 呼び出し元でstateとして保持したnowを渡してもらう形にしている。
+  const displayed = isActive ? remainingMs - (now - receivedAt) : remainingMs;
   const isLow = displayed < 30_000;
-  void tick; // 再レンダリングのトリガーとしてのみ使う
 
   return (
     <div
@@ -69,6 +70,8 @@ export default function GamePage() {
 
   const [session, setSession] = useState<StoredSession | null>(null);
   useEffect(() => {
+    // sessionStorageはサーバーでは読めないため、マウント後にクライアント側だけで読み込む(SSR hydration対策)。
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setSession(loadSession(gameId));
   }, [gameId]);
 
@@ -76,16 +79,18 @@ export default function GamePage() {
 
   const [selectedFrom, setSelectedFrom] = useState<Square | null>(null);
   const [selectedHandPiece, setSelectedHandPiece] = useState<string | null>(null);
-  const [receivedAt, setReceivedAt] = useState(Date.now());
-  const [tick, setTick] = useState(0);
+  const [receivedAt, setReceivedAt] = useState(() => Date.now());
+  const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
+    // サーバーから新しい持ち時間スナップショットを受け取るたびに基準時刻を取り直す。
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setReceivedAt(Date.now());
   }, [state?.timeControl?.remainingMs.sente, state?.timeControl?.remainingMs.gote]);
 
   useEffect(() => {
     if (!state?.timeControl || state.result.status !== "in_progress") return;
-    const interval = setInterval(() => setTick((t) => t + 1), 1000);
+    const interval = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(interval);
   }, [state?.timeControl, state?.result.status]);
 
@@ -195,7 +200,7 @@ export default function GamePage() {
             remainingMs={state.timeControl.remainingMs.gote}
             isActive={state.turn === "gote" && state.result.status === "in_progress"}
             receivedAt={receivedAt}
-            tick={tick}
+            now={now}
           />
           <ClockPanel
             color="sente"
@@ -203,7 +208,7 @@ export default function GamePage() {
             remainingMs={state.timeControl.remainingMs.sente}
             isActive={state.turn === "sente" && state.result.status === "in_progress"}
             receivedAt={receivedAt}
-            tick={tick}
+            now={now}
           />
         </div>
       )}

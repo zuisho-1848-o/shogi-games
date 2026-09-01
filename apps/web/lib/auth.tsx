@@ -41,6 +41,10 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   const [state, setState] = useState<AuthState>({ token: null, user: null });
 
   useEffect(() => {
+    // localStorageはサーバーでは読めないため、初回マウント後にクライアント側だけで読み込む
+    // (lazy initializerでuseState内から直接読むとSSR出力とクライアント初回描画が食い違い、
+    // hydration mismatchを起こす)。マウント時1回だけの意図的なsetStateなので抑制する。
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setState(loadStored());
   }, []);
 

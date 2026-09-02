@@ -252,3 +252,23 @@ export const attemptPuzzleMove = async (
   });
   return res.json();
 };
+
+export interface GameHistoryItem {
+  gameId: string;
+  ruleSetName: string;
+  senteName: string;
+  goteName: string;
+  resultStatus: string | null;
+  winner: string | null;
+  moveCount: number;
+  createdAt: string;
+}
+
+export const fetchGameHistory = async (): Promise<GameHistoryItem[]> => {
+  const res = await fetch(`${SERVER_URL}/api/games/history`);
+  if (!res.ok) throw new Error("failed to fetch game history");
+  const data = await res.json();
+  return data.games;
+};
+
+export const kifuDownloadUrl = (gameId: string): string => `${SERVER_URL}/api/games/${gameId}/kifu`;

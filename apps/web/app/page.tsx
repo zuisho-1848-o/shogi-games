@@ -149,6 +149,9 @@ export default function LobbyPage() {
         <button className="underline text-neutral-500" onClick={() => router.push("/puzzles")}>
           詰将棋
         </button>
+        <button className="underline text-neutral-500" onClick={() => router.push("/history")}>
+          対局履歴
+        </button>
       </div>
 
       <div className="flex flex-col gap-4 w-full max-w-md">

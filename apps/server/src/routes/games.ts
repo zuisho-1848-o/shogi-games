@@ -1,5 +1,8 @@
 import { Router } from "express";
 import {
+  GameResult,
+  Move,
+  MoveRecord,
   Player,
   RULE_SET_METADATA,
   RuleSet,
@@ -231,25 +234,102 @@ gamesRouter.post("/ai-vs-ai", gameCreationRateLimiter, asyncHandler(async (req, 
   res.json({ gameId: game.id, ruleSetId: resolved.ruleSetId, senteProfile: senteProfile.slug, goteProfile: goteProfile.slug });
 }));
 
-gamesRouter.get("/:gameId/kifu", (req, res) => {
-  const game = getGame(req.params.gameId);
-  if (!game) {
-    res.status(404).json({ error: "game_not_found" });
-    return;
-  }
+/** サーバー再起動後は終局済みの対局がメモリ上から消えている(in-memoryのgames Mapは
+ * 再起動時にin-progressの対局しか復元しない)ため、DBの生の指し手ログから棋譜情報を組み立て直す。
+ * 自己対局データを後から振り返りたい場合、これが唯一の手段になる。 */
+const reconstructKifuInputFromDb = async (
+  engineGameId: string
+): Promise<{ ruleSet: RuleSet; history: MoveRecord[]; result: GameResult; isSenteCpu: boolean; isGoteCpu: boolean } | null> => {
+  const dbGame = await prisma.game.findUnique({
+    where: { engineGameId },
+    include: { ruleSetPreset: true, moves: { orderBy: { moveNumber: "asc" } } },
+  });
+  if (!dbGame) return null;
 
-  const text = generateKifuText({
-    ruleSet: game.ruleSet,
-    history: game.state.history,
-    result: game.state.result,
-    sentePlayerName: game.cpuColors.sente ? "CPU" : "先手",
-    gotePlayerName: game.cpuColors.gote ? "CPU" : "後手",
+  const ruleSet = dbGame.ruleSetPreset.config as unknown as RuleSet;
+  const history: MoveRecord[] = dbGame.moves.map((m) => {
+    const move: Move =
+      m.moveType === "move"
+        ? { type: "move", from: { row: m.fromRow!, col: m.fromCol! }, to: { row: m.toRow, col: m.toCol }, piece: m.piece, promote: m.promote }
+        : { type: "drop", to: { row: m.toRow, col: m.toCol }, piece: m.piece };
+    return { player: m.player as Player, move, capturedKind: m.capturedPiece ?? undefined, checkedOpponent: false };
   });
 
-  res.setHeader("Content-Type", "text/plain; charset=utf-8");
-  res.setHeader("Content-Disposition", `attachment; filename="kifu_${game.id}.kif"`);
-  res.send(text);
-});
+  // DBのresultStatusはcheckmate/resigned/foul_loss以外を全て"draw"として保存しているため、
+  // timeout/持将棋の細かい区別はここでは復元できない(近似としてdrawで表示する)。
+  let result: GameResult;
+  if (dbGame.status !== "finished") {
+    result = { status: "in_progress" };
+  } else if (dbGame.resultStatus === "checkmate" || dbGame.resultStatus === "resigned" || dbGame.resultStatus === "foul_loss") {
+    result = { status: dbGame.resultStatus, winner: (dbGame.winner as Player) ?? "sente" } as GameResult;
+  } else {
+    result = { status: "draw", reason: "sennichite" };
+  }
+
+  return { ruleSet, history, result, isSenteCpu: dbGame.isSenteCpu, isGoteCpu: dbGame.isGoteCpu };
+};
+
+gamesRouter.get(
+  "/:gameId/kifu",
+  asyncHandler(async (req, res) => {
+    const game = getGame(req.params.gameId);
+    if (game) {
+      const text = generateKifuText({
+        ruleSet: game.ruleSet,
+        history: game.state.history,
+        result: game.state.result,
+        sentePlayerName: game.cpuColors.sente ? "CPU" : "先手",
+        gotePlayerName: game.cpuColors.gote ? "CPU" : "後手",
+      });
+      res.setHeader("Content-Type", "text/plain; charset=utf-8");
+      res.setHeader("Content-Disposition", `attachment; filename="kifu_${game.id}.kif"`);
+      res.send(text);
+      return;
+    }
+
+    const reconstructed = await reconstructKifuInputFromDb(req.params.gameId);
+    if (!reconstructed) {
+      res.status(404).json({ error: "game_not_found" });
+      return;
+    }
+    const text = generateKifuText({
+      ruleSet: reconstructed.ruleSet,
+      history: reconstructed.history,
+      result: reconstructed.result,
+      sentePlayerName: reconstructed.isSenteCpu ? "CPU" : "先手",
+      gotePlayerName: reconstructed.isGoteCpu ? "CPU" : "後手",
+    });
+    res.setHeader("Content-Type", "text/plain; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="kifu_${req.params.gameId}.kif"`);
+    res.send(text);
+  })
+);
+
+/** 過去の対局一覧(自己対局中心)。DBに保存済みのものであれば、サーバー再起動後でも一覧・閲覧できる。 */
+gamesRouter.get(
+  "/history",
+  asyncHandler(async (req, res) => {
+    const selfPlayOnly = req.query.selfPlayOnly !== "false";
+    const games = await prisma.game.findMany({
+      where: { status: "finished", ...(selfPlayOnly ? { isSenteCpu: true, isGoteCpu: true } : {}) },
+      include: { ruleSetPreset: true, senteUser: true, goteUser: true, _count: { select: { moves: true } } },
+      orderBy: { createdAt: "desc" },
+      take: 100,
+    });
+    res.json({
+      games: games.map((g) => ({
+        gameId: g.engineGameId,
+        ruleSetName: g.ruleSetPreset.name,
+        senteName: g.senteUser?.name ?? "先手",
+        goteName: g.goteUser?.name ?? "後手",
+        resultStatus: g.resultStatus,
+        winner: g.winner,
+        moveCount: g._count.moves,
+        createdAt: g.createdAt,
+      })),
+    });
+  })
+);
 
 gamesRouter.get("/:gameId/analysis", asyncHandler(async (req, res) => {
   const game = getGame(req.params.gameId);

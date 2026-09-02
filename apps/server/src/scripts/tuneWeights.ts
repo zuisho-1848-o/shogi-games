@@ -1,3 +1,4 @@
+import "dotenv/config";
 import { DEFAULT_WEIGHTS, getWeights, loadTunedWeightsIfPresent, saveTunedWeights } from "../ai/weights";
 import { collectTrainingPositions, tuneWeights } from "../ai/tuning";
 

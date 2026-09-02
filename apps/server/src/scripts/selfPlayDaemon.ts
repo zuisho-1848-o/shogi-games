@@ -105,6 +105,10 @@ process.on("SIGINT", () => {
 process.on("SIGTERM", () => {
   stopping = true;
 });
+// ループ内の各対局は既にtry/catchで囲んでいるが、想定外の経路でのクラッシュに備えて最終防衛ラインも置く。
+process.on("unhandledRejection", (reason) => {
+  console.error("[selfPlayDaemon] unhandled rejection:", reason);
+});
 
 runForever().catch((e) => {
   console.error("[selfPlayDaemon] fatal error:", e);

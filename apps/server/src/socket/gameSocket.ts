@@ -75,27 +75,37 @@ const maybeScheduleTimeout = (io: Server, game: ServerGame) => {
   const remaining = game.timeControl.remainingMs[turn];
 
   setTimeout(async () => {
-    const current = getGame(game.id);
-    if (!current || current.state.result.status !== "in_progress") return;
-    if (current.state.turn !== turn) return; // その間に着手されていれば何もしない
-    await applyTimeoutIfExpired(io, current);
+    try {
+      const current = getGame(game.id);
+      if (!current || current.state.result.status !== "in_progress") return;
+      if (current.state.turn !== turn) return; // その間に着手されていれば何もしない
+      await applyTimeoutIfExpired(io, current);
+    } catch (e) {
+      console.error(`[maybeScheduleTimeout] failed for game ${game.id}:`, e);
+    }
   }, Math.max(0, remaining) + 50); // 少し余裕を持たせる
 };
 
 export const registerGameSocket = (io: Server) => {
   io.on("connection", (socket: Socket) => {
     socket.on("join", ({ gameId, playerToken }: { gameId: string; playerToken?: string }) => {
-      const game = getGame(gameId);
-      if (!game) {
-        socket.emit("error", { message: "game_not_found" });
-        return;
-      }
+      try {
+        const game = getGame(gameId);
+        if (!game) {
+          socket.emit("error", { message: "game_not_found" });
+          return;
+        }
 
-      const color = playerToken ? colorForToken(game, playerToken) : null;
-      socket.join(color ? `${roomName(gameId)}:${color}` : `${roomName(gameId)}:spectator`);
-      socket.emit("state", serializeGame(game, color));
-      maybeTriggerCpuMove(io, game);
-      maybeScheduleTimeout(io, game);
+        const color = playerToken ? colorForToken(game, playerToken) : null;
+        socket.join(color ? `${roomName(gameId)}:${color}` : `${roomName(gameId)}:spectator`);
+        socket.emit("state", serializeGame(game, color));
+        maybeTriggerCpuMove(io, game);
+        maybeScheduleTimeout(io, game);
+      } catch (e) {
+        // Socket.ioは同期例外を握りつぶさないため、ここで拾わないとプロセス全体がクラッシュする。
+        console.error(`[gameSocket join] failed for game ${gameId}:`, e);
+        socket.emit("error", { message: "internal_error" });
+      }
     });
 
     socket.on(

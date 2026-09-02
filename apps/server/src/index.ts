@@ -1,6 +1,6 @@
 import "dotenv/config"; // apps/server/.env を読み込む(JWT_SECRET, WEB_ORIGIN, REDIS_URL等)。他のimportより先に実行する必要がある。
 import cors from "cors";
-import express from "express";
+import express, { NextFunction, Request, Response } from "express";
 import { createServer } from "node:http";
 import { Server } from "socket.io";
 import { createAdapter } from "@socket.io/redis-adapter";
@@ -33,6 +33,16 @@ app.use("/api/users", usersRouter);
 app.use("/api/games", gamesRouter);
 app.use("/api/puzzles", puzzlesRouter);
 
+// asyncHandlerで囲んだルートハンドラの例外はここに集約される(素のExpress 4はasyncの例外を自動で
+// 拾わないため、asyncHandlerがnext(err)経由でここに渡す)。何もしないと素のExpressのデフォルト挙動
+// (HTMLエラーページを返すだけ)になり、レスポンス形式が不揃いになるので、ここでJSON化しておく。
+// eslint的には4引数のミドルウェアは常にこの位置(全ルート登録の後)である必要がある。
+app.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {
+  console.error(`[express] unhandled error on ${req.method} ${req.path}:`, err);
+  if (res.headersSent) return;
+  res.status(500).json({ error: "internal_error" });
+});
+
 const httpServer = createServer(app);
 const io = new Server(httpServer, {
   cors: { origin: WEB_ORIGIN },
@@ -59,3 +69,13 @@ boot()
       console.log(`server listening on :${PORT}`);
     });
   });
+
+// 最後の砦: ここまでの個別対応(socket handlerのtry/catch、asyncHandler)で拾いきれなかった
+// 想定外の例外でプロセス全体が落ちて進行中の全対局が巻き添えになるのを防ぐ。本来はエラーの発生源ごとに
+// 個別対応すべきだが、未知の経路が今後も出てくる可能性を考え、最終防衛ラインとしてログのみ出して継続する。
+process.on("unhandledRejection", (reason) => {
+  console.error("[process] unhandled rejection:", reason);
+});
+process.on("uncaughtException", (err) => {
+  console.error("[process] uncaught exception:", err);
+});

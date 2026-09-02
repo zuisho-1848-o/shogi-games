@@ -47,29 +47,34 @@ export const registerMatchSocket = (io: Server) => {
         aiProfileSlug?: unknown;
         token?: unknown;
       }) => {
-        if (!checkSocketRateLimit(`${socket.id}:queueJoin`, QUEUE_JOIN_RATE_LIMIT, QUEUE_JOIN_RATE_WINDOW_MS)) {
-          socket.emit("queue:error", { message: "rate_limited" });
-          return;
-        }
-        if (!validRuleSetId(payload.ruleSetId)) {
-          socket.emit("queue:error", { message: "invalid_rule_set" });
-          return;
-        }
+        try {
+          if (!checkSocketRateLimit(`${socket.id}:queueJoin`, QUEUE_JOIN_RATE_LIMIT, QUEUE_JOIN_RATE_WINDOW_MS)) {
+            socket.emit("queue:error", { message: "rate_limited" });
+            return;
+          }
+          if (!validRuleSetId(payload.ruleSetId)) {
+            socket.emit("queue:error", { message: "invalid_rule_set" });
+            return;
+          }
 
-        const result = await joinQueue({
-          socketId: socket.id,
-          mode: "casual",
-          ruleSetId: payload.ruleSetId,
-          isBot: payload.isBot === true,
-          userId: userIdFromToken(payload.token),
-          opponentPreference: validPreference(payload.opponentPreference) ? payload.opponentPreference : "human",
-          aiProfileSlug: typeof payload.aiProfileSlug === "string" ? payload.aiProfileSlug : undefined,
-        });
-        if ("waiting" in result) {
-          socket.emit("queue:waiting", { mode: "casual" });
-          return;
+          const result = await joinQueue({
+            socketId: socket.id,
+            mode: "casual",
+            ruleSetId: payload.ruleSetId,
+            isBot: payload.isBot === true,
+            userId: userIdFromToken(payload.token),
+            opponentPreference: validPreference(payload.opponentPreference) ? payload.opponentPreference : "human",
+            aiProfileSlug: typeof payload.aiProfileSlug === "string" ? payload.aiProfileSlug : undefined,
+          });
+          if ("waiting" in result) {
+            socket.emit("queue:waiting", { mode: "casual" });
+            return;
+          }
+          await finalizeMatch(io, result);
+        } catch (e) {
+          console.error("[matchSocket queue:join-casual] failed:", e);
+          socket.emit("queue:error", { message: "internal_error" });
         }
-        await finalizeMatch(io, result);
       }
     );
 
@@ -82,46 +87,59 @@ export const registerMatchSocket = (io: Server) => {
         aiProfileSlug?: unknown;
         token?: unknown;
       }) => {
-        if (!checkSocketRateLimit(`${socket.id}:queueJoin`, QUEUE_JOIN_RATE_LIMIT, QUEUE_JOIN_RATE_WINDOW_MS)) {
-          socket.emit("queue:error", { message: "rate_limited" });
-          return;
-        }
-        if (!validCategories(payload.categories)) {
-          socket.emit("queue:error", { message: "invalid_categories" });
-          return;
-        }
+        try {
+          if (!checkSocketRateLimit(`${socket.id}:queueJoin`, QUEUE_JOIN_RATE_LIMIT, QUEUE_JOIN_RATE_WINDOW_MS)) {
+            socket.emit("queue:error", { message: "rate_limited" });
+            return;
+          }
+          if (!validCategories(payload.categories)) {
+            socket.emit("queue:error", { message: "invalid_categories" });
+            return;
+          }
 
-        const acceptedRuleSetIds = categoriesToRuleSetIds(payload.categories);
-        if (acceptedRuleSetIds.length === 0) {
-          socket.emit("queue:error", { message: "no_matching_rule_sets" });
-          return;
-        }
+          const acceptedRuleSetIds = categoriesToRuleSetIds(payload.categories);
+          if (acceptedRuleSetIds.length === 0) {
+            socket.emit("queue:error", { message: "no_matching_rule_sets" });
+            return;
+          }
 
-        const result = await joinQueue({
-          socketId: socket.id,
-          mode: "randomMatch",
-          acceptedRuleSetIds,
-          isBot: payload.isBot === true,
-          userId: userIdFromToken(payload.token),
-          opponentPreference: validPreference(payload.opponentPreference) ? payload.opponentPreference : "human",
-          aiProfileSlug: typeof payload.aiProfileSlug === "string" ? payload.aiProfileSlug : undefined,
-        });
-        if ("waiting" in result) {
-          socket.emit("queue:waiting", { mode: "randomMatch" });
-          return;
+          const result = await joinQueue({
+            socketId: socket.id,
+            mode: "randomMatch",
+            acceptedRuleSetIds,
+            isBot: payload.isBot === true,
+            userId: userIdFromToken(payload.token),
+            opponentPreference: validPreference(payload.opponentPreference) ? payload.opponentPreference : "human",
+            aiProfileSlug: typeof payload.aiProfileSlug === "string" ? payload.aiProfileSlug : undefined,
+          });
+          if ("waiting" in result) {
+            socket.emit("queue:waiting", { mode: "randomMatch" });
+            return;
+          }
+          await finalizeMatch(io, result);
+        } catch (e) {
+          console.error("[matchSocket queue:join-random] failed:", e);
+          socket.emit("queue:error", { message: "internal_error" });
         }
-        await finalizeMatch(io, result);
       }
     );
 
     socket.on("queue:leave", async () => {
-      await leaveQueueBySocket(socket.id);
-      socket.emit("queue:left");
+      try {
+        await leaveQueueBySocket(socket.id);
+        socket.emit("queue:left");
+      } catch (e) {
+        console.error("[matchSocket queue:leave] failed:", e);
+      }
     });
 
     socket.on("disconnect", async () => {
-      await leaveQueueBySocket(socket.id);
-      clearSocketRateLimit(socket.id);
+      try {
+        await leaveQueueBySocket(socket.id);
+        clearSocketRateLimit(socket.id);
+      } catch (e) {
+        console.error("[matchSocket disconnect] failed:", e);
+      }
     });
   });
 };

@@ -14,6 +14,7 @@ import { AI_PROFILES, AI_USER_IDS, getAiProfileBySlug } from "../aiProfiles";
 import { analyzeGameHistory } from "../analysis";
 import { playSelfPlayBatch } from "../selfPlay";
 import { gameCreationRateLimiter } from "../rateLimit";
+import { asyncHandler } from "../asyncHandler";
 
 export const gamesRouter = Router();
 
@@ -58,7 +59,7 @@ gamesRouter.get("/ai-profiles", (_req, res) => {
   res.json({ profiles: AI_PROFILES.map((p) => ({ slug: p.slug, name: p.name })) });
 });
 
-gamesRouter.post("/cpu", gameCreationRateLimiter, async (req, res) => {
+gamesRouter.post("/cpu", gameCreationRateLimiter, asyncHandler(async (req, res) => {
   const humanColor: Player = req.body?.color === "gote" ? "gote" : "sente";
   const userId = getUserIdFromRequest(req) ?? undefined;
 
@@ -112,9 +113,9 @@ gamesRouter.post("/cpu", gameCreationRateLimiter, async (req, res) => {
     ruleSetId: resolved.ruleSetId,
     aiProfileSlug: aiProfile.slug,
   });
-});
+}));
 
-gamesRouter.post("/private", gameCreationRateLimiter, async (req, res) => {
+gamesRouter.post("/private", gameCreationRateLimiter, asyncHandler(async (req, res) => {
   const humanColor: Player = req.body?.color === "gote" ? "gote" : "sente";
   const userId = getUserIdFromRequest(req) ?? undefined;
 
@@ -160,9 +161,9 @@ gamesRouter.post("/private", gameCreationRateLimiter, async (req, res) => {
     mode: "private",
     ruleSetId: resolved.ruleSetId,
   });
-});
+}));
 
-gamesRouter.post("/private/join", gameCreationRateLimiter, async (req, res) => {
+gamesRouter.post("/private/join", gameCreationRateLimiter, asyncHandler(async (req, res) => {
   const roomCode = String(req.body?.roomCode ?? "");
   const userId = getUserIdFromRequest(req) ?? undefined;
   const result = joinPrivateGame(roomCode, userId);
@@ -189,9 +190,9 @@ gamesRouter.post("/private/join", gameCreationRateLimiter, async (req, res) => {
   }
 
   res.json({ gameId: game.id, playerToken, yourColor: color, mode: "private", ruleSetId: game.ruleSet.id });
-});
+}));
 
-gamesRouter.post("/ai-vs-ai", gameCreationRateLimiter, async (req, res) => {
+gamesRouter.post("/ai-vs-ai", gameCreationRateLimiter, asyncHandler(async (req, res) => {
   let resolved: { ruleSet: RuleSet; ruleSetId: string };
   try {
     resolved = resolveRuleSet(req.body ?? {});
@@ -228,7 +229,7 @@ gamesRouter.post("/ai-vs-ai", gameCreationRateLimiter, async (req, res) => {
   game.dbGameId = dbGame.id;
 
   res.json({ gameId: game.id, ruleSetId: resolved.ruleSetId, senteProfile: senteProfile.slug, goteProfile: goteProfile.slug });
-});
+}));
 
 gamesRouter.get("/:gameId/kifu", (req, res) => {
   const game = getGame(req.params.gameId);
@@ -250,7 +251,7 @@ gamesRouter.get("/:gameId/kifu", (req, res) => {
   res.send(text);
 });
 
-gamesRouter.get("/:gameId/analysis", async (req, res) => {
+gamesRouter.get("/:gameId/analysis", asyncHandler(async (req, res) => {
   const game = getGame(req.params.gameId);
   if (!game) {
     res.status(404).json({ error: "game_not_found" });
@@ -259,7 +260,7 @@ gamesRouter.get("/:gameId/analysis", async (req, res) => {
 
   const analysis = analyzeGameHistory(game.ruleSet, game.state.history);
   res.json({ gameId: game.id, analysis });
-});
+}));
 
 const MAX_SELF_PLAY_BATCH = 20;
 

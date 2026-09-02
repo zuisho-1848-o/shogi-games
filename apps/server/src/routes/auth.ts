@@ -2,6 +2,7 @@ import { Router } from "express";
 import bcrypt from "bcryptjs";
 import { prisma } from "../db";
 import { getUserIdFromRequest, signToken } from "../auth";
+import { asyncHandler } from "../asyncHandler";
 
 export const authRouter = Router();
 
@@ -15,7 +16,7 @@ const publicUser = (user: { id: string; name: string; rating: number; isAi: bool
   gamesPlayed: user.gamesPlayed,
 });
 
-authRouter.post("/register", async (req, res) => {
+authRouter.post("/register", asyncHandler(async (req, res) => {
   const name = typeof req.body?.name === "string" ? req.body.name.trim() : "";
   const email = typeof req.body?.email === "string" ? req.body.email.trim().toLowerCase() : "";
   const password = typeof req.body?.password === "string" ? req.body.password : "";
@@ -35,9 +36,9 @@ authRouter.post("/register", async (req, res) => {
   const user = await prisma.user.create({ data: { name, email, passwordHash } });
 
   res.json({ token: signToken(user.id), user: publicUser(user) });
-});
+}));
 
-authRouter.post("/login", async (req, res) => {
+authRouter.post("/login", asyncHandler(async (req, res) => {
   const email = typeof req.body?.email === "string" ? req.body.email.trim().toLowerCase() : "";
   const password = typeof req.body?.password === "string" ? req.body.password : "";
 
@@ -48,9 +49,9 @@ authRouter.post("/login", async (req, res) => {
   }
 
   res.json({ token: signToken(user.id), user: publicUser(user) });
-});
+}));
 
-authRouter.get("/me", async (req, res) => {
+authRouter.get("/me", asyncHandler(async (req, res) => {
   const userId = getUserIdFromRequest(req);
   if (!userId) {
     res.status(401).json({ error: "not_authenticated" });
@@ -64,4 +65,4 @@ authRouter.get("/me", async (req, res) => {
   }
 
   res.json({ user: publicUser(user) });
-});
+}));

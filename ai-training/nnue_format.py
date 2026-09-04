@@ -63,6 +63,10 @@ BOARD_OFFSETS = {key: (FE_HAND_END + i * 2 * SQ_NB, FE_HAND_END + (i * 2 + 1) * 
 FE_END = FE_HAND_END + len(BOARD_KEY_ORDER) * 2 * SQ_NB  # 90 + 9*2*81 = 1548
 
 
+def opponent_of(owner: str) -> str:
+    return "gote" if owner == "sente" else "sente"
+
+
 def yaneura_square(row: int, col: int) -> int:
     """内部座標(row,col: 0始まり)をやねうら王のSquare番号(0-80)に変換する。
     file=col+1, rank=row+1、Square=(file-1)*9+(rank-1) = col*9+row (types.hのSQ_11=0起点の並びと一致)。"""

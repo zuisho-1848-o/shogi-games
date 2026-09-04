@@ -8,7 +8,8 @@
     "start": "node dist/index.js",
     "self-play:daemon": "nice -n 15 tsx src/scripts/selfPlayDaemon.ts",
     "tune:weights": "tsx src/scripts/tuneWeights.ts",
-    "puzzles:generate": "tsx src/scripts/generatePuzzles.ts"
+    "puzzles:generate": "tsx src/scripts/generatePuzzles.ts",
+    "nnue:export-data": "tsx src/scripts/exportNnueTrainingData.ts"
   },
   "dependencies": {
     "@shogi-games/db": "*",

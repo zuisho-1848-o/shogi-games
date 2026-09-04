@@ -50,7 +50,8 @@ const main = async () => {
 
   console.log(`[exportNnueTeacherData] found ${dbGames.length} standard self-play games, teacher=${teacherEnginePath}`);
 
-  const engine = new UsiEngine({ enginePath: teacherEnginePath });
+  // Threads=1にしてCPU負荷(ファン音・発熱)を抑える。時間はかかっても良いのでピーク負荷を優先して下げる。
+  const engine = new UsiEngine({ enginePath: teacherEnginePath, options: { Threads: "1" } });
   await engine.start();
 
   fs.mkdirSync(path.dirname(outPath), { recursive: true });

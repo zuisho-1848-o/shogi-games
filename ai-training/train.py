@@ -26,6 +26,14 @@ from export_nnue import export
 
 SCALE = 400.0  # apps/server/src/ai/tuning.tsのsigmoidスケールと合わせる
 
+# C++側の特徴変換層(feature transformer)は出力をclamp(0,127)するだけで、affine層のような
+# 固定シフト(kWeightScaleBits=6)による再スケールが無い。つまりこの層の「重みの単位」は完全に自由で、
+# 学習側が決めて良い。ここでは「訓練時のclampが実際に意味のある形で効くように」、accumulatorに
+# 固定倍率をかけてからclampする設計にしている(=quantization-aware trainingの簡易版)。
+# こうしておかないと、量子化書き出し時に重みが小さすぎて丸めるとほぼ全部0になり、
+# (実際に発生したバグ)盤面によらず評価値が常に0になってしまう。
+FT_ACTIVATION_SCALE = 400.0
+
 
 class NnueModel(nn.Module):
     def __init__(self):
@@ -39,8 +47,8 @@ class NnueModel(nn.Module):
         self.output = nn.Linear(HIDDEN2_OUT, 1)
 
     def forward(self, own_flat, own_offsets, opp_flat, opp_offsets):
-        own_acc = self.feature_transformer(own_flat, own_offsets) + self.ft_bias
-        opp_acc = self.feature_transformer(opp_flat, opp_offsets) + self.ft_bias
+        own_acc = (self.feature_transformer(own_flat, own_offsets) + self.ft_bias) * FT_ACTIVATION_SCALE
+        opp_acc = (self.feature_transformer(opp_flat, opp_offsets) + self.ft_bias) * FT_ACTIVATION_SCALE
         x = torch.clamp(torch.cat([own_acc, opp_acc], dim=1), 0, 127)
         x = torch.clamp(self.hidden1(x), 0, 127)
         x = torch.clamp(self.hidden2(x), 0, 127)
@@ -92,18 +100,20 @@ AFFINE_WEIGHT_SCALE = 64  # kWeightScaleBits=6 (nnue_common.h) -> 2^6。C++側�
 def export_model(model: NnueModel, out_path: str):
     """floatで学習した重みを、やねうら王のC++側が前提とする固定スケールで量子化して書き出す。
 
-    - feature_transformer: 学習時点でclamp(0,127)という実機と同じ範囲でクリップして訓練しているため、
-      重み・バイアスは追加のスケーリング無しでそのままint16に丸めればよい(動的な正規化をしてしまうと、
-      C++側のクリップ範囲[0,127]と学習時の値のスケールがズレて壊れる)。
+    - feature_transformer: forward()内でFT_ACTIVATION_SCALEを掛けてからclamp(0,127)している
+      (訓練時のclampを実際に意味のある形で効かせるため)ので、書き出す重み・バイアスにも
+      同じFT_ACTIVATION_SCALEを掛けてからint16に丸める(掛け忘れると、学習済みの生の重みは
+      小さい値(だいたい0.01程度)しかないため、丸めるとほぼ全部0になり、盤面によらず評価値が
+      常に0になる、という実際に踏んだバグがある)。
     - hidden1/hidden2/output: C++側はaffine層の出力を必ず2^6(kWeightScaleBits)で右シフトする固定仕様
       (nnue_common.h)なので、重みはfloat*64を丸めてint8に、バイアスはfloat*64を丸めてint32にする
       (動的スケールにすると、シフト量が固定のC++側と数値の意味が食い違ってしまう)。
-    まだquantization-aware training(学習中に量子化誤差を考慮する手法)はしていないので、
-    値の範囲によっては丸め誤差・クリップによる精度劣化が大きい可能性がある。"""
+    まだ丸め誤差そのものを訓練中の損失に織り込む厳密なquantization-aware trainingはしていないので、
+    値の範囲によっては丸め誤差・クリップによる精度劣化が残っている可能性がある。"""
     model.eval()
     with torch.no_grad():
-        ft_w = model.feature_transformer.weight.cpu().numpy()  # (RAW_FEATURE_DIMENSIONS, HALF_DIMENSIONS)
-        ft_b = model.ft_bias.cpu().numpy()
+        ft_w = model.feature_transformer.weight.cpu().numpy() * FT_ACTIVATION_SCALE  # (RAW_FEATURE_DIMENSIONS, HALF_DIMENSIONS)
+        ft_b = model.ft_bias.cpu().numpy() * FT_ACTIVATION_SCALE
         ft_w_q = ft_w.round().clip(-32768, 32767).astype("int16")
         ft_b_q = ft_b.round().clip(-32768, 32767).astype("int16")
 

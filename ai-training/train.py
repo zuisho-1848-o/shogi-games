@@ -8,9 +8,11 @@ halfkp_512x2-16-32アーキテクチャのNNUE評価関数を学習する。
   -> Linear(16->32) -> clamp(0,127)
   -> Linear(32->1)  (これが生の評価値。学習時はsigmoid(out/SCALE)で勝率に変換して教師信号と比較する)
 
-学習の教師信号はDBの自己対局結果(勝敗)。将来的にはやねうら王自身の探索評価値を教師にする
-(いわゆるteacher-student方式)ほうが精度が上がると思われるが、まずは既存のTexelチューニング
-(apps/server/src/ai/tuning.ts)と同じ「対局結果を使う」方式で学習パイプライン全体を通す。
+教師信号は2種類対応している:
+- 勝敗方式(load_jsonl): DBの自己対局結果(勝ち/負け/引き分け)。ノイズが大きい。
+- 教師あり蒸留方式(load_teacher_jsonl, 推奨): やねうら王自身の探索評価値(evalCp)を教師にする。
+  局面ごとの情報量が多くノイズが少ないため、こちらの方が学習効率が良いと期待される。
+  apps/server/src/scripts/exportNnueTeacherData.tsで生成したJSONLを使う(--teacherフラグ)。
 """
 
 import sys
@@ -18,7 +20,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 
-from dataset import load_jsonl, NnueDataset, collate
+from dataset import load_jsonl, load_teacher_jsonl, NnueDataset, collate
 from nnue_format import HALF_DIMENSIONS, RAW_FEATURE_DIMENSIONS, HIDDEN1_OUT, HIDDEN2_OUT
 from export_nnue import export
 
@@ -45,11 +47,11 @@ class NnueModel(nn.Module):
         return self.output(x).squeeze(-1)
 
 
-def train(data_path: str, out_bin_path: str, epochs: int = 20, batch_size: int = 256, lr: float = 1e-3):
+def train(data_path: str, out_bin_path: str, epochs: int = 20, batch_size: int = 256, lr: float = 1e-3, teacher: bool = False):
     device = "mps" if torch.backends.mps.is_available() else "cpu"
-    print(f"device: {device}")
+    print(f"device: {device}, teacher mode: {teacher}")
 
-    samples = load_jsonl(data_path)
+    samples = load_teacher_jsonl(data_path) if teacher else load_jsonl(data_path)
     print(f"loaded {len(samples)} positions")
     if len(samples) < 100:
         print("WARNING: 学習データが少なすぎる可能性があります(目安: 最低でも数千局面)")
@@ -120,7 +122,9 @@ def export_model(model: NnueModel, out_path: str):
 
 
 if __name__ == "__main__":
-    data_path = sys.argv[1] if len(sys.argv) > 1 else "data/positions.jsonl"
-    out_path = sys.argv[2] if len(sys.argv) > 2 else "data/trained_nn.bin"
-    epochs = int(sys.argv[3]) if len(sys.argv) > 3 else 20
-    train(data_path, out_path, epochs=epochs)
+    args = [a for a in sys.argv[1:] if a != "--teacher"]
+    teacher_mode = "--teacher" in sys.argv[1:]
+    data_path = args[0] if len(args) > 0 else "data/positions.jsonl"
+    out_path = args[1] if len(args) > 1 else "data/trained_nn.bin"
+    epochs = int(args[2]) if len(args) > 2 else 20
+    train(data_path, out_path, epochs=epochs, teacher=teacher_mode)

@@ -23,6 +23,9 @@ export class UsiEngine {
   private proc: ChildProcessWithoutNullStreams | null = null;
   private rl: readline.Interface | null = null;
   private pendingLineHandlers: ((line: string) => boolean)[] = [];
+  /** 直近の"info ... score cp/mate ..."行から読み取った評価値(常に手番側から見た値、centipawn換算)。
+   * 教師データ生成(ai-training)で「指し手」だけでなく「評価値」も欲しい場合に使う。 */
+  private lastScoreCp: number | null = null;
 
   constructor(private readonly opts: UsiEngineOptions) {}
 
@@ -54,6 +57,15 @@ export class UsiEngine {
     return parts[1] ?? "resign";
   }
 
+  /** goSfenと同じだが、指し手と一緒に手番側から見た評価値(centipawn)も返す。
+   * 詰みを検出した場合はscoreCpをmate相当の大きな値(±30000)にクランプする。
+   * 学習データの教師ラベル生成(ai-training)用。 */
+  async evalSfen(sfen: string, params: { byoyomiMs?: number; depth?: number } = {}): Promise<{ move: string; scoreCp: number | null }> {
+    this.lastScoreCp = null;
+    const move = await this.goSfen(sfen, params);
+    return { move, scoreCp: this.lastScoreCp };
+  }
+
   stop(): void {
     if (!this.proc) return;
     this.send("quit");
@@ -68,6 +80,16 @@ export class UsiEngine {
   }
 
   private onLine(line: string): void {
+    if (line.startsWith("info ") && line.includes(" score ")) {
+      const cpMatch = line.match(/ score cp (-?\d+)/);
+      const mateMatch = line.match(/ score mate (-?\d+)/);
+      if (cpMatch) {
+        this.lastScoreCp = Number(cpMatch[1]);
+      } else if (mateMatch) {
+        // 詰み: 手数の符号で有利/不利を判定し、centipawnスケールとして十分大きな値にクランプする。
+        this.lastScoreCp = Number(mateMatch[1]) >= 0 ? 30000 : -30000;
+      }
+    }
     for (let i = this.pendingLineHandlers.length - 1; i >= 0; i--) {
       if (this.pendingLineHandlers[i](line)) {
         this.pendingLineHandlers.splice(i, 1);

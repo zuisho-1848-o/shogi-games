@@ -17,7 +17,11 @@ class Sample:
     outcome: float  # turn(=side to move)側から見た結果。1=勝ち,0=負け,0.5=引き分け
 
 
+EVAL_SCALE = 400.0  # train.pyのSCALEと合わせる(sigmoid(cp/EVAL_SCALE)で勝率相当に変換する)
+
+
 def load_jsonl(path: str) -> list[Sample]:
+    """勝敗(outcome: 0/0.5/1)を教師にしたJSONL(exportNnueTrainingData.ts)を読み込む。"""
     samples: list[Sample] = []
     with open(path, "r") as f:
         for line in f:
@@ -32,6 +36,30 @@ def load_jsonl(path: str) -> list[Sample]:
             own_idx = active_feature_indices(pieces, hands, turn)
             opp_idx = active_feature_indices(pieces, hands, opp)
             samples.append(Sample(own_idx, opp_idx, float(row["outcome"])))
+    return samples
+
+
+def load_teacher_jsonl(path: str) -> list[Sample]:
+    """探索評価値(evalCp)を教師にしたJSONL(exportNnueTeacherData.ts)を読み込む。
+    評価値をsigmoid(cp/EVAL_SCALE)で0〜1の「勝率相当」に変換し、Sample.outcomeとして扱う
+    (train.py側は勝敗方式と全く同じ損失関数・学習ループをそのまま使い回せる)。"""
+    import math
+
+    samples: list[Sample] = []
+    with open(path, "r") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            row = json.loads(line)
+            pieces = [BoardPiece(p["row"], p["col"], p["kind"], p["owner"], p["promoted"]) for p in row["board"]]
+            hands = row["hands"]
+            turn = row["turn"]
+            opp = opponent_of(turn)
+            own_idx = active_feature_indices(pieces, hands, turn)
+            opp_idx = active_feature_indices(pieces, hands, opp)
+            win_prob = 1.0 / (1.0 + math.exp(-float(row["evalCp"]) / EVAL_SCALE))
+            samples.append(Sample(own_idx, opp_idx, win_prob))
     return samples
 
 

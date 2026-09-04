@@ -9,7 +9,8 @@
     "self-play:daemon": "nice -n 15 tsx src/scripts/selfPlayDaemon.ts",
     "tune:weights": "tsx src/scripts/tuneWeights.ts",
     "puzzles:generate": "tsx src/scripts/generatePuzzles.ts",
-    "nnue:export-data": "tsx src/scripts/exportNnueTrainingData.ts"
+    "nnue:export-data": "tsx src/scripts/exportNnueTrainingData.ts",
+    "nnue:export-teacher-data": "tsx src/scripts/exportNnueTeacherData.ts"
   },
   "dependencies": {
     "@shogi-games/db": "*",
